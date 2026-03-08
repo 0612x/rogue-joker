@@ -4,48 +4,42 @@ import { Modifier, Enemy, HandType, Joker, Consumable, TFTCard, Synergy } from '
 export const LEVEL_EXP_CURVE: Record<number, number> = {
   1: 2,
   2: 4,
-  3: 6,
-  4: 10,
-  5: 20,
-  6: 36,
-  7: 56,
-  8: 80,
-  9: 9999 // Max level
+  3: 8,
+  4: 14,
+  5: 24,
+  6: 9999 // Max level
 };
 
 export const SHOP_PROBABILITIES: Record<number, Record<number, number>> = {
   1: { 1: 100, 2: 0, 3: 0, 4: 0, 5: 0 },
-  2: { 1: 100, 2: 0, 3: 0, 4: 0, 5: 0 },
-  3: { 1: 100, 2: 0, 3: 0, 4: 0, 5: 0 },
-  4: { 1: 75, 2: 25, 3: 0, 4: 0, 5: 0 }, // Interpolated
-  5: { 1: 45, 2: 35, 3: 20, 4: 0, 5: 0 },
-  6: { 1: 30, 2: 35, 3: 30, 4: 5, 5: 0 }, // Interpolated
-  7: { 1: 15, 2: 30, 3: 40, 4: 15, 5: 0 },
-  8: { 1: 10, 2: 20, 3: 35, 4: 25, 5: 10 }, // Interpolated
-  9: { 1: 5, 2: 10, 3: 30, 4: 40, 5: 15 }
+  2: { 1: 80, 2: 20, 3: 0, 4: 0, 5: 0 },
+  3: { 1: 50, 2: 35, 3: 15, 4: 0, 5: 0 },
+  4: { 1: 30, 2: 40, 3: 25, 4: 5, 5: 0 },
+  5: { 1: 15, 2: 30, 3: 35, 4: 15, 5: 5 },
+  6: { 1: 5, 2: 15, 3: 30, 4: 35, 5: 15 }
 };
 
-// --- Synergies ---
+// --- Synergies (Refactored for Max 6 Units) ---
 export const SYNERGIES: Synergy[] = [
   // Suits
   {
     id: 'spades',
     name: '锋刃 (Blade)',
     type: 'suit',
-    thresholds: [2, 4, 6, 8],
+    thresholds: [2, 4, 6],
     currentCount: 0,
     activeLevel: 0,
-    description: '黑桃伤害提升 20%/50%/100%/300%。8锋刃自带 100% 真实伤害。',
+    description: '(2)基础伤害+30; (4)基础伤害+80; (6)基础伤害翻3倍。',
     icon: '⚔️'
   },
   {
     id: 'hearts',
     name: '堡垒 (Fortress)',
     type: 'suit',
-    thresholds: [2, 4, 6, 8],
+    thresholds: [2, 4, 6],
     currentCount: 0,
     activeLevel: 0,
-    description: '打出红桃加 15/40/100/300 护甲。8堡垒回合结束反弹 100% 护甲值的伤害。',
+    description: '(2)出牌+20护甲; (4)出牌+50护甲; (6)回合结束反弹100%护甲值的真实伤害。',
     icon: '🛡️'
   },
   {
@@ -55,17 +49,17 @@ export const SYNERGIES: Synergy[] = [
     thresholds: [2, 4, 6],
     currentCount: 0,
     activeLevel: 0,
-    description: '打出梅花上 2/5/15 层毒。6猛毒每回合毒伤翻倍。',
+    description: '(2)施加2层毒; (4)施加6层毒; (6)每回合敌方毒伤直接翻倍。',
     icon: '🧪'
   },
   {
     id: 'diamonds',
     name: '财阀 (Tycoon)',
     type: 'suit',
-    thresholds: [3, 5, 7],
+    thresholds: [2, 4, 6],
     currentCount: 0,
     activeLevel: 0,
-    description: '打出方块掉 1 块钱概率 30%/80%/100%。7财阀每回合送 1 次免费 D 牌和 1 个消耗品。',
+    description: '(2)胜利额外掉落2金币; (4)胜利掉落5金币; (6)商店刷新只需1金币，并无视利息上限。',
     icon: '💎'
   },
   // Classes
@@ -76,7 +70,7 @@ export const SYNERGIES: Synergy[] = [
     thresholds: [2, 4, 6],
     currentCount: 0,
     activeLevel: 0,
-    description: '包含对子时，总倍率 +2 / +6 / +15。',
+    description: '(2)含对子总倍率+2; (4)含对子总倍率+6; (6)含对子总倍率+15。',
     icon: '🧮'
   },
   {
@@ -86,7 +80,7 @@ export const SYNERGIES: Synergy[] = [
     thresholds: [2, 4],
     currentCount: 0,
     activeLevel: 0,
-    description: '(2) 同花只需 4 张。(4) 同花只需 3 张，且同花倍率 x3。',
+    description: '(2)同花只需4张牌; (4)同花只需3张牌，且同花倍率 x3。',
     icon: '🌊'
   },
   {
@@ -96,7 +90,7 @@ export const SYNERGIES: Synergy[] = [
     thresholds: [2, 4],
     currentCount: 0,
     activeLevel: 0,
-    description: '(2) 顺子可循环 (Q-K-A-2-3)。(4) 打出顺子恢复 1 次出牌机会。',
+    description: '(2)顺子可首尾相连; (4)打出顺子时不消耗出牌次数。',
     icon: '🃏'
   },
   {
@@ -106,7 +100,7 @@ export const SYNERGIES: Synergy[] = [
     thresholds: [2, 4],
     currentCount: 0,
     activeLevel: 0,
-    description: '(2) 换牌次数 +2。(4) 每次换牌，弃掉的牌化为真实伤害打怪。',
+    description: '(2)每回合额外获得2次弃牌机会; (4)每次弃牌，直接对怪物造成真实伤害。',
     icon: '🎩'
   },
   {
@@ -116,7 +110,7 @@ export const SYNERGIES: Synergy[] = [
     thresholds: [2, 4],
     currentCount: 0,
     activeLevel: 0,
-    description: '(2) 只打 1 张牌时，伤害 x3。(4) 只打 1 张牌时，触发该牌 3 次效果。',
+    description: '(2)只出单张时伤害x3; (4)只出单张时伤害x9。',
     icon: '🔪'
   },
   {
@@ -126,7 +120,7 @@ export const SYNERGIES: Synergy[] = [
     thresholds: [2, 4],
     currentCount: 0,
     activeLevel: 0,
-    description: '(2) 商店 D 牌只需 1 块钱。(4) 商店必定刷出一张你场上已有的牌。',
+    description: '(2)商店刷新只需1金币; (4)商店第1格必定刷出现有同名卡。',
     icon: '🎲'
   }
 ];

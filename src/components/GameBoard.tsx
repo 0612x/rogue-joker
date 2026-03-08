@@ -90,8 +90,12 @@ export default function GameBoard() {
   const [shopRefreshCost, setShopRefreshCost] = useState(2);
   const [level, setLevel] = useState(1);
   const [showMenu, setShowMenu] = useState(false);
-  const [activeModal, setActiveModal] = useState<'poker' | 'rogue' | 'deck' | 'guide' | null>(null);
+  const [activeModal, setActiveModal] = useState<'poker' | 'rogue' | 'deck' | 'guide' | 'mechanics' | null>(null);
   const [isSelling, setIsSelling] = useState(false);
+  
+  // 浮动特效反馈数组
+  const [feedbackTexts, setFeedbackTexts] = useState<{id: number, text: string, color: string}[]>([]);
+  const [tftFeedbacks, setTftFeedbacks] = useState<{index: number, text: string, color: string, id: number}[]>([]);
   
   // Scoring UI State
   const [scoreBreakdown, setScoreBreakdown] = useState<ScoreBreakdown | null>(null);
@@ -321,8 +325,18 @@ export default function GameBoard() {
     // Calculate Rewards
     let rewardGold = 2; // Fixed: Base reward reduced from 5 to 2
     
-    // 1. Interest
-    const interest = Math.min(5, Math.floor(player.gold / 10));
+    const currentSynergies = calculateActiveSynergies(player.activeTFTCards);
+    
+    // Tycoon (财阀) 胜利额外掉落
+    const tycoon = currentSynergies.find(s => s.id === 'diamonds');
+    if (tycoon) {
+        if (tycoon.activeLevel === 1) rewardGold += 2;
+        if (tycoon.activeLevel >= 2) rewardGold += 5;
+    }
+
+    // 1. Interest (财阀6 突破利息上限)
+    let interestCap = (tycoon && tycoon.activeLevel >= 3) ? 999 : 5;
+    const interest = Math.min(interestCap, Math.floor(player.gold / 10));
     rewardGold += interest;
     
     // 2. Quick Kill Bonus
@@ -334,8 +348,7 @@ export default function GameBoard() {
     let newLevel = player.level;
     let newMaxExp = player.maxExp;
 
-    // Calculate Synergies for Start of Battle Effects
-    const currentSynergies = calculateActiveSynergies(player.activeTFTCards);
+    // (移除了重复声明的 currentSynergies)
     
     let baseDiscards = 3;
     const magician = currentSynergies.find(s => s.id === 'magician');
@@ -343,18 +356,13 @@ export default function GameBoard() {
         baseDiscards += 2;
     }
 
-    const tycoon = currentSynergies.find(s => s.id === 'tycoon');
-    if (tycoon && tycoon.activeLevel >= 3) {
-        rewardGold += 3; // Fixed: Reduced Tycoon bonus
-    }
-
     // Level Up Logic
-    while (newLevel < 9 && newExp >= newMaxExp) {
+    while (newLevel < 6 && newExp >= newMaxExp) {
         newExp -= newMaxExp;
         newLevel++;
         newMaxExp = LEVEL_EXP_CURVE[newLevel];
     }
-    if (newLevel === 9) {
+    if (newLevel === 6) {
         newExp = 0;
         newMaxExp = 9999;
     }
@@ -376,7 +384,7 @@ export default function GameBoard() {
         deck: shuffleDeck([...prev.deck, ...prev.hand, ...prev.discardPile]),
     }));
 
-    const probs = SHOP_PROBABILITIES[newLevel] || SHOP_PROBABILITIES[9];
+    const probs = SHOP_PROBABILITIES[newLevel] || SHOP_PROBABILITIES[6];
     const newShopCards: TFTCard[] = [];
     for (let i = 0; i < 4; i++) {
         const roll = Math.random() * 100;
@@ -401,7 +409,7 @@ export default function GameBoard() {
 
   const generateShop = () => {
     const newShopCards: TFTCard[] = [];
-    const probs = SHOP_PROBABILITIES[player.level] || SHOP_PROBABILITIES[9];
+    const probs = SHOP_PROBABILITIES[player.level] || SHOP_PROBABILITIES[6];
 
     const currentSynergies = calculateActiveSynergies(player.activeTFTCards);
     const cheater = currentSynergies.find(s => s.id === 'cheater');
@@ -456,10 +464,10 @@ export default function GameBoard() {
   };
 
   const buyExp = () => {
-    if (player.gold < 4 && player.level < 9) return;
-    if (player.level === 9 && player.gold < 20) return;
+    if (player.gold < 4 && player.level < 6) return;
+    if (player.level === 6 && player.gold < 20) return;
 
-    if (player.level === 9) {
+    if (player.level === 6) {
         setPlayer(prev => {
             if (prev.activeTFTCards.length === 0) return { ...prev, gold: prev.gold - 20 };
             const newActive = [...prev.activeTFTCards];
@@ -492,12 +500,12 @@ export default function GameBoard() {
             let newLevel = prev.level;
             let newMaxExp = prev.maxExp;
 
-            while (newLevel < 9 && newExp >= newMaxExp) {
+            while (newLevel < 6 && newExp >= newMaxExp) {
                 newExp -= newMaxExp;
                 newLevel++;
                 newMaxExp = LEVEL_EXP_CURVE[newLevel];
             }
-            if (newLevel === 9) {
+            if (newLevel === 6) {
                 newExp = 0;
                 newMaxExp = 9999;
             }
@@ -514,7 +522,11 @@ export default function GameBoard() {
 
   const refreshShop = () => {
     const cheaterSynergy = activeSynergies.find(s => s.id === 'cheater');
-    const cost = (cheaterSynergy && cheaterSynergy.activeLevel >= 1) ? 1 : shopRefreshCost;
+    const tycoonSynergy = activeSynergies.find(s => s.id === 'diamonds');
+    let cost = shopRefreshCost;
+    if (cheaterSynergy && cheaterSynergy.activeLevel >= 1) cost = 1;
+    if (tycoonSynergy && tycoonSynergy.activeLevel >= 3) cost = 1; // 财阀6 D牌1块钱
+    
     if (player.gold >= cost) {
         setPlayer(prev => ({ ...prev, gold: prev.gold - cost }));
         generateShop();
@@ -710,6 +722,82 @@ export default function GameBoard() {
     
     let breakdown = calculateScore(sortedHand, evalOptions);
 
+    // --- 立即生成视觉反馈 (与算分同步展示) ---
+    let newFeedbacks: {id: number, text: string, color: string}[] = [];
+    let newTftFeedbacks: {index: number, text: string, color: string, id: number}[] = [];
+
+    const hasSpades = sortedHand.cards.some(c => c.suit === 'spades');
+    const hasHearts = sortedHand.cards.some(c => c.suit === 'hearts');
+    const hasClubs = sortedHand.cards.some(c => c.suit === 'clubs');
+    const hasDiamonds = sortedHand.cards.some(c => c.suit === 'diamonds');
+    const isSingle = sortedHand.cards.length === 1;
+    const isPair = ['Pair', 'Two Pair', 'Full House'].includes(sortedHand.type);
+    const isStraight = ['Straight', 'Straight Flush', 'Royal Flush'].includes(sortedHand.type);
+
+    // 羁绊文字反馈
+    const bladeSynergy = activeSynergies.find(s => s.id === 'spades');
+    if (bladeSynergy && bladeSynergy.activeLevel > 0) {
+        const bonus = bladeSynergy.activeLevel === 1 ? 30 : bladeSynergy.activeLevel === 2 ? 80 : 0;
+        if (bonus > 0) newFeedbacks.push({ id: Date.now()+1, text: `锋刃: +${bonus}伤害`, color: 'text-cyan-400' });
+        if (bladeSynergy.activeLevel >= 3) newFeedbacks.push({ id: Date.now()+2, text: `锋刃: 终极伤害x3`, color: 'text-cyan-300' });
+    }
+    const fortressSynergy = activeSynergies.find(s => s.id === 'hearts');
+    if (fortressSynergy && fortressSynergy.activeLevel > 0) {
+        const bonus = fortressSynergy.activeLevel === 1 ? 20 : fortressSynergy.activeLevel === 2 ? 50 : 0;
+        if (bonus > 0) newFeedbacks.push({ id: Date.now()+3, text: `堡垒: +${bonus}护甲`, color: 'text-fuchsia-400' });
+    }
+    const venomSynergy = activeSynergies.find(s => s.id === 'clubs');
+    if (venomSynergy && venomSynergy.activeLevel > 0) {
+        const bonus = venomSynergy.activeLevel === 1 ? 2 : venomSynergy.activeLevel === 2 ? 6 : 6;
+        newFeedbacks.push({ id: Date.now()+4, text: `猛毒: +${bonus}层毒`, color: 'text-emerald-400' });
+    }
+    // 财阀 (转移到胜利结算，出牌时不弹加钱)
+
+    // 单卡插槽反馈 (严格匹配图鉴效果)
+    const isFlush = ['Flush', 'Straight Flush', 'Royal Flush'].includes(sortedHand.type);
+    const is3Kind = ['Three of a Kind', 'Full House', 'Four of a Kind'].includes(sortedHand.type);
+
+    player.activeTFTCards.forEach((card, index) => {
+        let text = ""; let color = "text-white";
+        const id = card.templateId;
+        const s = card.stars;
+
+        if (id === 'c1-blade-assassin' && isSingle && hasSpades) text = `+${s===1?15:s===2?35:100}伤害`;
+        else if (id === 'c1-fortress-calc' && isPair && hasHearts) text = `+${s===1?20:s===2?40:120}护甲`;
+        else if (id === 'c1-tycoon-calc' && isPair && hasDiamonds) text = `+$${s===1?1:s===2?2:6}`;
+        else if (id === 'c1-blade-surfer' && isFlush && hasSpades) text = `恢复${s===1?5:s===2?10:30}血`;
+        else if (id === 'c1-fortress-geek' && isStraight) text = `净化手牌`;
+        else if (id === 'c1-venom-geek' && isStraight) text = `毒伤爆发`;
+        else if (id === 'c2-blade-calc' && isPair && hasSpades) text = `尝试斩杀`;
+        else if (id === 'c2-fortress-surfer' && isFlush && hasHearts) text = `最大生命+${s===1?2:s===2?5:15}`;
+        else if (id === 'c2-venom-calc' && is3Kind) text = `毒素扩散`;
+        else if (id === 'c3-blade-geek' && isStraight && hasSpades) text = `永久增伤`;
+        else if (id === 'c3-venom-surfer' && isFlush && hasClubs) text = `百分比真伤`;
+        else if (id === 'c3-venom-assassin' && isSingle && hasClubs) text = `强行挂毒`;
+        else if (id === 'c4-blade-assassin' && isSingle && hasSpades) text = `伤害溅射`;
+        else if (id === 'c4-venom-mix' && isPair && hasClubs) text = `引爆毒层`;
+        else if (id === 'c5-blade-god' && hasSpades) text = `斩裂上限`;
+
+        if (text) {
+            if(text.includes('伤害')||text.includes('斩杀')||text.includes('上限')) color = "text-cyan-300";
+            if(text.includes('护甲')||text.includes('生命')||text.includes('血')) color = "text-fuchsia-400";
+            if(text.includes('毒')) color = "text-emerald-400";
+            if(text.includes('$')) color = "text-amber-400";
+            if(text.includes('净化')) color = "text-purple-400";
+            newTftFeedbacks.push({ index, text, color, id: Date.now() + index * 10 });
+        }
+    });
+
+    if (newFeedbacks.length > 0) {
+        setFeedbackTexts(newFeedbacks);
+        setTimeout(() => setFeedbackTexts([]), 3000); // 延长持续时间，陪伴整个算分过程
+    }
+    if (newTftFeedbacks.length > 0) {
+        setTftFeedbacks(newTftFeedbacks);
+        setTimeout(() => setTftFeedbacks([]), 3000);
+    }
+    // --- 视觉反馈结束 ---
+
     // 2. Apply Synergy Bonuses
     const calculatorSynergy = activeSynergies.find(s => s.id === 'calculator');
     if (calculatorSynergy && calculatorSynergy.activeLevel > 0) {
@@ -777,38 +865,73 @@ export default function GameBoard() {
     let goldGain = 0;
     let isPiercing = false;
 
-    // --- SYNERGY EFFECTS ---
+    // --- SYNERGY EFFECTS (Fixed IDs matching config) ---
     
-    // 1. Blade (Spades) - Flat Damage
-    const bladeSynergy = activeSynergies.find(s => s.id === 'blade');
+    // 1. Blade (Spades)
+    const bladeSynergy = activeSynergies.find(s => s.id === 'spades');
     if (bladeSynergy && bladeSynergy.activeLevel > 0) {
-        const bonus = bladeSynergy.activeLevel === 1 ? 15 : bladeSynergy.activeLevel === 2 ? 40 : 100;
+        const bonus = bladeSynergy.activeLevel === 1 ? 30 : bladeSynergy.activeLevel === 2 ? 80 : 0;
         rawDamage += bonus;
+        if (bladeSynergy.activeLevel >= 3) {
+            rawDamage *= 3;
+        }
     }
 
-    // 2. Fortress (Hearts) - Block
-    const fortressSynergy = activeSynergies.find(s => s.id === 'fortress');
+    // 2. Fortress (Hearts)
+    const fortressSynergy = activeSynergies.find(s => s.id === 'hearts');
     if (fortressSynergy && fortressSynergy.activeLevel > 0) {
-        const bonus = fortressSynergy.activeLevel === 1 ? 10 : fortressSynergy.activeLevel === 2 ? 30 : 80;
+        const bonus = fortressSynergy.activeLevel === 1 ? 20 : fortressSynergy.activeLevel === 2 ? 50 : 0;
         blockGain += bonus;
     }
 
-    // 3. Venom (Clubs) - Poison
-    const venomSynergy = activeSynergies.find(s => s.id === 'venom');
+    // 3. Venom (Clubs)
+    const venomSynergy = activeSynergies.find(s => s.id === 'clubs');
     if (venomSynergy && venomSynergy.activeLevel > 0) {
-        const bonus = venomSynergy.activeLevel === 1 ? 2 : venomSynergy.activeLevel === 2 ? 5 : 12;
+        const bonus = venomSynergy.activeLevel === 1 ? 2 : venomSynergy.activeLevel === 2 ? 6 : 6;
         poisonStacks += bonus;
     }
 
-    // 4. Tycoon (Diamonds) - Gold
-    const tycoonSynergy = activeSynergies.find(s => s.id === 'tycoon');
-    if (tycoonSynergy && tycoonSynergy.activeLevel > 0) {
-        const bonus = tycoonSynergy.activeLevel === 1 ? 2 : tycoonSynergy.activeLevel === 2 ? 5 : 15;
-        goldGain += bonus;
-    }
+    // 财阀加钱已移至回合胜利阶段
 
-    // 5. Magician - (Removed Double Cast, implemented as Discard Bonus)
-    // (No logic here for Magician)
+    // --- TFT CARD EFFECTS (精准映射独立效果) ---
+    const hasSpades = selectedHand.cards.some(c => c.suit === 'spades');
+    const hasHearts = selectedHand.cards.some(c => c.suit === 'hearts');
+    const hasClubs = selectedHand.cards.some(c => c.suit === 'clubs');
+    const hasDiamonds = selectedHand.cards.some(c => c.suit === 'diamonds');
+    const isSingle = selectedHand.cards.length === 1;
+    const isPair = ['Pair', 'Two Pair', 'Full House', 'Four of a Kind'].includes(selectedHand.type);
+    const isFlush = ['Flush', 'Straight Flush', 'Royal Flush'].includes(selectedHand.type);
+    const isStraight = ['Straight', 'Straight Flush', 'Royal Flush'].includes(selectedHand.type);
+    const is3Kind = ['Three of a Kind', 'Full House', 'Four of a Kind'].includes(selectedHand.type);
+
+    let healAmount = 0;
+    let maxHpGain = 0;
+    let enemyCurrentHpDmg = 0;
+    let enemyMaxHpDmg = 0;
+
+    player.activeTFTCards.forEach((card) => {
+        const id = card.templateId;
+        const s = card.stars;
+
+        if (id === 'c1-blade-assassin' && isSingle && hasSpades) rawDamage += s===1?15:s===2?35:100;
+        if (id === 'c1-fortress-calc' && isPair && hasHearts) blockGain += s===1?20:s===2?40:120;
+        if (id === 'c1-tycoon-calc' && isPair && hasDiamonds) goldGain += s===1?1:s===2?2:6;
+        if (id === 'c1-blade-surfer' && isFlush && hasSpades) healAmount += s===1?5:s===2?10:30;
+        if (id === 'c1-venom-geek' && isStraight) enemyCurrentHpDmg += (enemy.statusEffects.find(e=>e.type==='poison')?.stacks || 0) * (s===1?1:s===2?2:5);
+        if (id === 'c2-blade-calc' && isPair && hasSpades) {
+            if (enemy.currentHp / enemy.maxHp <= (s===1?0.1:s===2?0.2:0.5)) enemyCurrentHpDmg += enemy.currentHp;
+        }
+        if (id === 'c2-fortress-surfer' && isFlush && hasHearts) maxHpGain += s===1?2:s===2?5:15;
+        if (id === 'c2-venom-calc' && is3Kind) poisonStacks += (enemy.statusEffects.find(e=>e.type==='poison')?.stacks || 0) * (s===1?1:s===2?2:4);
+        if (id === 'c3-blade-geek' && isStraight && hasSpades) rawDamage += s===1?20:s===2?50:100; 
+        if (id === 'c3-venom-surfer' && isFlush && hasClubs) enemyCurrentHpDmg += enemy.currentHp * (s===1?0.05:s===2?0.1:0.25);
+        if (id === 'c3-venom-assassin' && isSingle && hasClubs) poisonStacks += s===1?15:s===2?35:100;
+        if (id === 'c4-blade-assassin' && isSingle && hasSpades) rawDamage *= (s===1?2:s===2?3:7); 
+        if (id === 'c4-venom-mix' && isPair && hasClubs) enemyCurrentHpDmg += (enemy.statusEffects.find(e=>e.type==='poison')?.stacks || 0) * (s===1?2:s===2?4:10);
+        if (id === 'c5-blade-god' && hasSpades) enemyMaxHpDmg += enemy.maxHp * (s===1?0.05:s===2?0.15:1);
+    });
+
+    // Apply Modifiers
 
     // Suit Effects
     // (Note: Base game has no suit effects, but we keep the logic for future modifiers)
@@ -884,7 +1007,8 @@ export default function GameBoard() {
               damageDealt = 0;
           }
       }
-      let newHp = Math.max(0, prev.currentHp - damageDealt);
+      // 追加卡牌直接扣除血量的效果 (无视护甲)
+      let newHp = Math.max(0, prev.currentHp - damageDealt - enemyCurrentHpDmg - enemyMaxHpDmg);
 
       let newIntent = { ...prev.intent };
       if (player.modifiers.some(m => m.id === 'straight-obsession') && (selectedHand.type === 'Straight' || selectedHand.type === 'Straight Flush')) {
@@ -943,9 +1067,17 @@ export default function GameBoard() {
           discardsGained = 2;
       }
 
+      // 逻辑门卫 净化手牌
+      let finalHand = remainingHand;
+      if (player.activeTFTCards.some(t => t.templateId === 'c1-fortress-geek') && isStraight) {
+          finalHand = finalHand.map(c => ({...c, isLocked: false, isHidden: false}));
+      }
+
       return {
         ...prev,
-        hand: remainingHand,
+        currentHp: Math.min(prev.maxHp + maxHpGain, prev.currentHp + healAmount),
+        maxHp: prev.maxHp + maxHpGain,
+        hand: finalHand,
         discardPile: newDiscard,
         pendingCardIds: [],
         hands: prev.hands - handsConsumed,
@@ -1004,6 +1136,22 @@ export default function GameBoard() {
       if (memoryDamage > 0) {
           setEnemy(e => e ? { ...e, currentHp: Math.max(0, e.currentHp - memoryDamage) } : null);
       }
+      
+      // 剧毒吹箭: 弃牌上毒
+      let discardPoison = 0;
+      prev.activeTFTCards.forEach(card => {
+          if (card.templateId === 'c1-venom-magician') discardPoison += card.stars === 1 ? 2 : card.stars === 2 ? 4 : 12;
+      });
+      if (discardPoison > 0) {
+          setEnemy(e => {
+             if (!e) return null;
+             let newEffects = [...e.statusEffects];
+             const p = newEffects.find(ef => ef.type === 'poison');
+             if (p) p.stacks += discardPoison;
+             else newEffects.push({ type: 'poison', stacks: discardPoison });
+             return { ...e, statusEffects: newEffects };
+          });
+      }
 
       const selectedIds = new Set(selectedCards.map(c => c.id));
       const remainingHand = prev.hand.filter(c => !selectedIds.has(c.id));
@@ -1046,12 +1194,22 @@ export default function GameBoard() {
     if (player.modifiers.some(m => m.id === 'thorns-protocol')) {
         thornsDamage = Math.floor(player.block / 5) * 2;
     }
+    // 堡垒6: 反弹100%护甲值
+    const fortress = activeSynergies.find(s => s.id === 'hearts');
+    if (fortress && fortress.activeLevel >= 3) {
+        thornsDamage += player.block;
+    }
 
     // 2. Enemy Poison Damage & Thorns
     let enemyPoisonDamage = 0;
     const poisonEffect = enemy.statusEffects.find(e => e.type === 'poison');
     if (poisonEffect) {
         enemyPoisonDamage = poisonEffect.stacks;
+    }
+    // 猛毒6: 毒伤翻倍
+    const venom = activeSynergies.find(s => s.id === 'clubs');
+    if (venom && venom.activeLevel >= 3) {
+        enemyPoisonDamage *= 2; 
     }
 
     const totalPassiveDamage = enemyPoisonDamage + thornsDamage;
@@ -1171,6 +1329,17 @@ export default function GameBoard() {
         }
 
         const { drawn, remaining } = drawCards(currentDeck, 8);
+        
+        // 魔术师增加基础弃牌，老千发牌童子结算剩余手牌换钱
+        let extraGold = 0;
+        prev.activeTFTCards.forEach(c => {
+            if (c.templateId === 'c1-tycoon-cheater') extraGold += prev.hands * (c.stars===1?1:c.stars===2?2:5);
+            if (c.templateId === 'c2-venom-cheater') extraGold += Math.floor((enemy.statusEffects.find(e=>e.type==='poison')?.stacks || 0) / 10) * (c.stars===1?1:c.stars===2?2:6);
+        });
+
+        let baseDiscards = 3;
+        const magician = activeSynergies.find(s => s.id === 'magician');
+        if (magician && magician.activeLevel >= 1) baseDiscards += 2;
 
         return {
             ...prev,
@@ -1179,8 +1348,9 @@ export default function GameBoard() {
             discardPile: currentDiscard,
             pendingCardIds: [],
             hands: 3,
-            discards: 3,
-            block: 0
+            discards: baseDiscards,
+            block: 0,
+            gold: prev.gold + extraGold
         };
     });
 
@@ -1278,10 +1448,17 @@ export default function GameBoard() {
             </button>
             <button 
               onClick={() => { setActiveModal('deck'); setShowMenu(false); }}
-              className="w-full px-5 py-3 flex items-center gap-3 hover:bg-white/5 text-left text-xs font-medium text-slate-300 transition-colors"
+              className="w-full px-5 py-3 flex items-center gap-3 hover:bg-white/5 text-left text-xs font-medium text-slate-300 border-b border-white/5 transition-colors"
             >
               <Activity size={14} className="text-slate-400" />
               查看当前牌库
+            </button>
+            <button 
+              onClick={() => { setActiveModal('mechanics'); setShowMenu(false); }}
+              className="w-full px-5 py-3 flex items-center gap-3 hover:bg-white/5 text-left text-xs font-medium text-amber-400 bg-amber-500/10 transition-colors"
+            >
+              <Layers size={14} />
+              系统机制百科
             </button>
           </motion.div>
         )}
@@ -1303,7 +1480,7 @@ export default function GameBoard() {
             >
               <div className="p-4 border-b border-white/5 flex justify-between items-center bg-white/5">
                 <h3 className="text-base font-bold text-white tracking-tight">
-                  {activeModal === 'poker' ? '牌型与伤害科普' : activeModal === 'rogue' ? '肉鸽效果与玩法' : activeModal === 'guide' ? '新手快速入门' : '当前牌库'}
+                  {activeModal === 'poker' ? '牌型与伤害科普' : activeModal === 'rogue' ? '肉鸽效果与玩法' : activeModal === 'guide' ? '新手快速入门' : activeModal === 'mechanics' ? '系统机制百科' : '当前牌库'}
                 </h3>
                 <button onClick={() => setActiveModal(null)} className="p-2 hover:bg-white/10 rounded-full transition-colors text-slate-400 hover:text-white">
                   <X size={18} />
@@ -1405,6 +1582,40 @@ export default function GameBoard() {
                           </div>
                         ))}
                       </div>
+                    </section>
+                  </div>
+                )}
+                {activeModal === 'mechanics' && (
+                  <div className="space-y-4 font-sans text-xs">
+                    <section className="bg-black/30 p-3 rounded-xl border border-white/5">
+                      <h4 className="text-amber-400 font-bold mb-2 uppercase text-[10px] tracking-widest flex items-center gap-2">
+                        <Coins size={12} /> 经济与利息系统
+                      </h4>
+                      <p className="leading-relaxed text-slate-300">
+                        击败怪物会获得基础金币。如果你保留金币不花，**每拥有 10 金币，下回合就会产生 1 金币的利息**（利息上限为 5 金币/回合，即 50 存款吃满）。<br/><br/>
+                        <span className="text-amber-500/80">提示：前期适当存钱吃利息，是后期能疯狂D牌的关键。</span>
+                      </p>
+                    </section>
+                    
+                    <section className="bg-black/30 p-3 rounded-xl border border-white/5">
+                      <h4 className="text-blue-400 font-bold mb-2 uppercase text-[10px] tracking-widest flex items-center gap-2">
+                        <Layers size={12} /> 等级、上场位与备战席
+                      </h4>
+                      <div className="space-y-2 text-slate-300">
+                        <p><b>玩家等级 (LEVEL)：</b>最高上限为 <span className="text-emerald-400 font-bold">6级</span>。等级可以通过花费金币购买经验来提升。</p>
+                        <p><b>上场位 (ACTIVE)：</b>等同于你的当前等级。1级只能上阵1张卡片，<span className="text-emerald-400 font-bold">满级6级最多同时上阵6张卡</span>。只有在场上的卡片才能为你提供【羁绊】和【属性加成】。</p>
+                        <p><b>备战席 (BENCH)：</b>固定拥有 6 个空位。你可以把商店买来的卡先放在这里。如果备战席和场上凑齐了 <span className="text-amber-400 font-bold">3张同星级、同名的卡</span>，它们会自动合成一张更高星级的卡（属性翻倍）！</p>
+                      </div>
+                    </section>
+
+                    <section className="bg-black/30 p-3 rounded-xl border border-white/5">
+                      <h4 className="text-purple-400 font-bold mb-2 uppercase text-[10px] tracking-widest flex items-center gap-2">
+                        <Star size={12} /> 羁绊是如何生效的？
+                      </h4>
+                      <p className="leading-relaxed text-slate-300">
+                        每张商店购买的卡片都有左侧的“颜色条”和名字下方的“标签”。当你把它们拖到【上场位】时，会自动激活对应的职业/花色羁绊。<br/>
+                        比如：场上有两张带有【锋刃】标签的卡，就会激活“2锋刃”效果（全局伤害增加）。点击左侧羁绊栏可以随时查看生效加成。
+                      </p>
                     </section>
                   </div>
                 )}
@@ -1678,6 +1889,25 @@ export default function GameBoard() {
                                                 </motion.div>
                                             )}
                                         </AnimatePresence>
+
+                                        {/*羁绊文字反馈 (仅展示在中心区域)*/}
+                    {slotIndex === 2 && feedbackTexts.length > 0 && (
+                        <div className="absolute top-1/2 -translate-y-1/2 -right-32 flex flex-col gap-1 z-[100] pointer-events-none">
+                            <AnimatePresence>
+                                {feedbackTexts.map(fb => (
+                                    <motion.div
+                                        key={fb.id}
+                                        initial={{ opacity: 0, x: -20, scale: 0.8 }}
+                                        animate={{ opacity: 1, x: 0, scale: 1 }}
+                                        exit={{ opacity: 0, y: -20 }}
+                                        className={`text-sm sm:text-base font-black ${fb.color} drop-shadow-[0_0_8px_currentColor] bg-black/60 px-3 py-1 rounded-full border border-white/10`}
+                                    >
+                                        {fb.text}
+                                    </motion.div>
+                                ))}
+                            </AnimatePresence>
+                        </div>
+                    )}
                                     </motion.div>
                                 )}
                             </AnimatePresence>
@@ -1772,7 +2002,7 @@ export default function GameBoard() {
         </div>
 
         {/* TFT Tactical Board Area */}
-        <section className="shrink-0 px-4 py-1.5 bg-slate-900/80 border-t border-white/10 backdrop-blur-2xl relative overflow-hidden z-40">
+        <section className="shrink-0 px-4 py-1.5 bg-slate-900/80 border-t border-white/10 backdrop-blur-2xl relative overflow-visible z-40">
             {/* Background Grid Effect */}
             <div className="absolute inset-0 opacity-5 pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle at 1px 1px, white 1px, transparent 0)', backgroundSize: '16px 16px' }} />
             
@@ -1837,8 +2067,8 @@ export default function GameBoard() {
                                         else moveActiveToBench(i);
                                     }}
                                     whileHover={showShop ? { scale: 1.05, y: -2 } : {}}
-                                    className={`
-                                        w-9 h-12 rounded-lg border flex flex-col items-center justify-center shrink-0 relative transition-all duration-300 overflow-hidden
+                                   className={`
+                                        w-9 h-12 rounded-lg border flex flex-col items-center justify-center shrink-0 relative transition-all duration-300 overflow-visible
                                         ${showShop ? 'cursor-pointer' : 'cursor-default'}
                                         ${player.activeTFTCards[i] 
                                             ? (isSelling ? 'bg-rose-900 border-rose-500 shadow-lg shadow-rose-900/50' : 'bg-slate-800 border-blue-500/40 shadow-lg') 
@@ -1846,7 +2076,7 @@ export default function GameBoard() {
                                     `}
                                 >
                                     {player.activeTFTCards[i] && isSelling && (
-                                        <div className="absolute inset-0 bg-rose-500/20 flex items-center justify-center z-20 pointer-events-none">
+                                        <div className="absolute inset-0 rounded-lg bg-rose-500/20 flex items-center justify-center z-20 pointer-events-none overflow-hidden">
                                             <span className="text-[10px] font-black text-white drop-shadow-md">出售</span>
                                         </div>
                                     )}
@@ -1860,6 +2090,20 @@ export default function GameBoard() {
                                                     <Star key={j} size={4} className="fill-amber-400 text-amber-400" />
                                                 ))}
                                             </div>
+                                            {/* 插槽卡牌专属视觉反馈 */}
+                                            <AnimatePresence>
+                                                {tftFeedbacks.filter(f => f.index === i).map(fb => (
+                                                    <motion.div
+                                                        key={fb.id}
+                                                        initial={{ opacity: 0, y: 0, scale: 0.5 }}
+                                                        animate={{ opacity: 1, y: -25, scale: 1.2 }}
+                                                        exit={{ opacity: 0, y: -45 }}
+                                                        className={`absolute top-0 left-1/2 -translate-x-1/2 whitespace-nowrap text-[12px] font-black ${fb.color} drop-shadow-[0_0_8px_currentColor] z-[100] pointer-events-none`}
+                                                    >
+                                                        {fb.text}
+                                                    </motion.div>
+                                                ))}
+                                            </AnimatePresence>
                                         </>
                                     ) : (
                                         <div className="text-slate-800"><Layers size={10} /></div>
