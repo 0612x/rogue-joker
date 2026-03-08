@@ -55,7 +55,11 @@ const MONSTER_ABILITIES = [
   { name: '寄生 (Junk)', icon: <Trash2 size={14} className="text-emerald-400" />, desc: '往弃牌堆塞入 0 分废牌，稀释牌库。', example: <TutorialCard rank="?" suit="spades" isJunk /> },
   { name: '吸血 (Leech)', icon: <Droplet size={14} className="text-rose-600" />, desc: '你造成的伤害 50% 转化为怪物生命回复。', example: <TutorialCard rank="K" suit="diamonds" /> },
 ];
-
+// Runtime Buff Storage for Cross-Turn mechanics
+let globalTemporaryMult = 0;
+let illusionistCacheScore = 0;
+// --- 全局战斗缓存状态 (修复 ReferenceError) ---
+let turnTemporaryMult = 0;
 // Initial Player State
 const INITIAL_PLAYER: PlayerState = {
   maxHp: 100,
@@ -101,6 +105,7 @@ export default function GameBoard() {
   const [scoreBreakdown, setScoreBreakdown] = useState<ScoreBreakdown | null>(null);
   const [isCalculating, setIsCalculating] = useState(false);
   const [playingCards, setPlayingCards] = useState<Card[]>([]);
+  const [scoringSequence, setScoringSequence] = useState<any[]>([]); // 存放数字依次跳动的动画队列
   
   // Derived cards for the buffer zone
   const selectedCards = useMemo(() => {
@@ -137,11 +142,7 @@ export default function GameBoard() {
         allowWrapAroundStraight: false
     };
     
-    // Add TFT Card stats (Safeguard added)
-    player.activeTFTCards.forEach(card => {
-        if (card.stats?.chips) options.tftChipsBonus! += card.stats.chips;
-        if (card.stats?.mult) options.tftMultBonus! += card.stats.mult;
-    });
+    // (卡牌与Buff的数值注入已全部转移至 playHand 的动画时序队列中，实现动态跳字！)
 
     // Synergies
     const surfer = activeSynergies.find(s => s.id === 'surfer');
@@ -155,6 +156,15 @@ export default function GameBoard() {
     const geek = activeSynergies.find(s => s.id === 'geek');
     if (geek && geek.activeLevel >= 1) {
         options.allowWrapAroundStraight = true;
+    }
+
+    // Calculator (4) & Assassin (2) rule altering can be placed in score calculation
+    const assassin = activeSynergies.find(s => s.id === 'assassin');
+    // ...
+
+    // Capital Croc Wildcard rule
+    if (player.gold > 50 && player.activeTFTCards.some(c => c.templateId === 'c4-03')) {
+       // All cards treated as wildcards is tricky in memo, handled via score logic natively if needed
     }
 
     // Modifiers (Legacy/Items)
@@ -226,34 +236,64 @@ export default function GameBoard() {
       currentTime += cardInterval;
     });
 
-    // 3. Finalize
+    // 3. Animate Synergy and TFT Sequence (依次亮起并跳动数字)
+    scoringSequence.forEach((step) => {
+        addTimeout(() => {
+            if (step.type === 'synergy' || step.type === 'mod') {
+                setFeedbackTexts([{ id: Date.now(), text: step.text, color: step.color }]);
+            } else if (step.type === 'tft') {
+                setTftFeedbacks([{ id: Date.now(), index: step.index!, text: step.text, color: step.color }]);
+            }
+            
+            // 数字跳动同步
+            setDisplayChips(step.chips);
+            setDisplayMult(step.mult);
+            
+            // 如果直接暴力修改了Total乘区(如处决乘算*3)，临时弹一下总分提示
+            if (step.total !== step.chips * step.mult) {
+                setDisplayTotal(step.total);
+                setShowTotal(true);
+                setTimeout(() => setShowTotal(false), 400);
+            }
+            
+            setChipsPulse(true);
+            setMultPulse(true);
+            setTimeout(() => { setChipsPulse(false); setMultPulse(false); }, 200);
+        }, currentTime);
+        
+        currentTime += 600; // 每个流派特效给600ms的展示时间，爽感拉满
+    });
+
+    // 4. Finalize & Clear feedbacks
     addTimeout(() => {
+      setFeedbackTexts([]);
+      setTftFeedbacks([]);
       setDisplayChips(scoreBreakdown.chips);
       setDisplayMult(scoreBreakdown.mult);
     }, currentTime + 100);
 
-    // 4. Total
+    // 5. Show Final Total
     addTimeout(() => {
       setShowTotal(true);
       setDisplayTotal(scoreBreakdown.total);
     }, currentTime + 300);
 
-    // 4.5 飞行撞击特效
+    // 6. Flying Damage Blast
     addTimeout(() => {
       setShowTotal(false);
       setFlyingDamage({ amount: scoreBreakdown.total, isFlying: true });
     }, currentTime + 1300);
 
-    // 5. 命中判定与扣血 (大幅缩短飞行时间，形成急速撞击感)
+    // 7. Hit Enemy
     addTimeout(() => {
       setFlyingDamage(null);
       setEnemyHitState('hit');
-      setTimeout(() => setEnemyHitState('idle'), 400); // 震动持续时间
+      setTimeout(() => setEnemyHitState('idle'), 400); 
       applyHandEffects();
-    }, currentTime + 1550); // 仅250ms的飞行时间，短促有力
+    }, currentTime + 1550); 
 
     return () => timeouts.forEach(clearTimeout);
-  }, [isCalculating, scoreBreakdown, playingCards]);
+  }, [isCalculating, scoreBreakdown, playingCards, scoringSequence]);
 
   // Check Win Condition
   useEffect(() => {
@@ -306,6 +346,7 @@ export default function GameBoard() {
   };
 
   const startNewRun = () => {
+    turnTemporaryMult = 0;
     setLevel(1);
     const newDeck = shuffleDeck(createDeck());
     const { drawn, remaining } = drawCards(newDeck, 8);
@@ -322,26 +363,42 @@ export default function GameBoard() {
   };
 
   const startNextBattle = () => {
-    // Calculate Rewards
-    let rewardGold = 2; // Fixed: Base reward reduced from 5 to 2
+    turnTemporaryMult = 0;
+    let rewardGold = 2; 
+    let healAmount = 0;
     
     const currentSynergies = calculateActiveSynergies(player.activeTFTCards);
     
-    // Tycoon (财阀) 胜利额外掉落
-    const tycoon = currentSynergies.find(s => s.id === 'diamonds');
-    if (tycoon) {
-        if (tycoon.activeLevel === 1) rewardGold += 2;
-        if (tycoon.activeLevel >= 2) rewardGold += 5;
+    // 财阀(Syndicate) 胜利额外掉落
+    const syndicate = currentSynergies.find(s => s.id === 'diamonds');
+    if (syndicate && syndicate.activeLevel >= 1) {
+        rewardGold += 3;
     }
 
-    // 1. Interest (财阀6 突破利息上限)
-    let interestCap = (tycoon && tycoon.activeLevel >= 3) ? 999 : 5;
+    // 利息 (财阀4: 上限10)
+    let interestCap = (syndicate && syndicate.activeLevel >= 2) ? 10 : 5;
     const interest = Math.min(interestCap, Math.floor(player.gold / 10));
     rewardGold += interest;
     
-    // 2. Quick Kill Bonus
+    // 快速击杀
     if (player.handsUsedThisBattle === 1) rewardGold += 2;
     else if (player.handsUsedThisBattle === 2) rewardGold += 1;
+
+    // c1-02 与 c3-06 的养成结算
+    const updatedActiveCards = player.activeTFTCards.map(c => {
+        if (c.templateId === 'c1-02') {
+            const magician = currentSynergies.find(s => s.id === 'magician');
+            const baseDiscards = 3 + (magician && magician.activeLevel >= 1 ? 2 : 0);
+            const hasDiscarded = player.discards < baseDiscards; 
+            if (!hasDiscarded) rewardGold += c.stars === 1 ? 1 : c.stars === 2 ? 2 : 5;
+            if (player.currentHp < player.maxHp) healAmount += c.stars === 1 ? 2 : c.stars === 2 ? 5 : 15;
+        }
+        if (c.templateId === 'c3-06' && interest > 0) {
+            const multGain = interest * (c.stars===1?1:c.stars===2?2:5);
+            return { ...c, stats: { ...c.stats, mult: (c.stats?.mult || 0) + multGain } };
+        }
+        return c;
+    });
 
     // 3. EXP Gain
     let newExp = player.currentExp + 2;
@@ -382,6 +439,7 @@ export default function GameBoard() {
         pendingCardIds: [],
         handsUsedThisBattle: 0,
         deck: shuffleDeck([...prev.deck, ...prev.hand, ...prev.discardPile]),
+        activeTFTCards: updatedActiveCards
     }));
 
     const probs = SHOP_PROBABILITIES[newLevel] || SHOP_PROBABILITIES[6];
@@ -527,15 +585,49 @@ export default function GameBoard() {
     if (cheaterSynergy && cheaterSynergy.activeLevel >= 1) cost = 1;
     if (tycoonSynergy && tycoonSynergy.activeLevel >= 3) cost = 1; // 财阀6 D牌1块钱
     
-    if (player.gold >= cost) {
-        setPlayer(prev => ({ ...prev, gold: prev.gold - cost }));
+    const canBloodSacrifice = cheaterSynergy && cheaterSynergy.activeLevel >= 2;
+    const requiredHp = (cost - player.gold) * 2;
+
+    if (player.gold >= cost || (canBloodSacrifice && player.currentHp > requiredHp)) {
+        let goldToPay = Math.min(player.gold, cost);
+        let hpToPay = canBloodSacrifice && player.gold < cost ? requiredHp : 0;
+        let hpCost = hpToPay;
+        let tftFbs: any[] = [];
+        
+        // c1-05 拾荒猎犬 (刷新扣血涨筹码)
+        const updatedCards = player.activeTFTCards.map((c, idx) => {
+            if (c.templateId === 'c1-05') {
+                hpCost += 1;
+                tftFbs.push({ index: idx, text: `拾荒成长`, color: 'text-rose-400', id: Date.now()+idx });
+                return { ...c, stats: { ...c.stats, chips: (c.stats?.chips || 0) + (c.stars===1?2:c.stars===2?5:15) } };
+            }
+            return c;
+        });
+
+        if (tftFbs.length > 0) {
+            setTftFeedbacks(tftFbs);
+            setTimeout(() => setTftFeedbacks([]), 2000);
+        }
+
+        setPlayer(prev => ({ 
+            ...prev, 
+            gold: prev.gold - goldToPay,
+            currentHp: Math.max(1, prev.currentHp - hpCost),
+            activeTFTCards: updatedCards
+        }));
         generateShop();
     }
   };
-
   // Fixed: Comprehensive 3-to-1 Synthesis Logic
   const buyTFTCard = (card: TFTCard, index: number) => {
-    if (player.gold >= card.cost && player.benchTFTCards.length < 6) {
+    const cheaterSynergy = activeSynergies.find(s => s.id === 'cheater');
+    const canBloodSacrifice = cheaterSynergy && cheaterSynergy.activeLevel >= 2;
+    const requiredHp = (card.cost - player.gold) * 2;
+
+    if ((player.gold >= card.cost || (canBloodSacrifice && player.currentHp > requiredHp)) && player.benchTFTCards.length < 6) {
+        const goldToPay = Math.min(player.gold, card.cost);
+        const hpToPay = canBloodSacrifice && player.gold < card.cost ? requiredHp : 0;
+
         setPlayer(prev => {
             let newActive = [...prev.activeTFTCards];
             let newBench = [...prev.benchTFTCards, { ...card, stats: { ...card.stats } }];
@@ -593,7 +685,8 @@ export default function GameBoard() {
 
             return {
                 ...prev,
-                gold: prev.gold - card.cost,
+                gold: prev.gold - goldToPay,
+                currentHp: prev.currentHp - hpToPay,
                 activeTFTCards: newActive,
                 benchTFTCards: newBench
             };
@@ -711,137 +804,191 @@ export default function GameBoard() {
     }
   }, [player.hand, evalOptions]);
 
-  // Play Hand Action
+  // Play Hand Action (重构：精准排队的算分流)
   const playHand = () => {
     if (!selectedHand || player.hands <= 0 || gameStatus !== 'playing' || isCalculating) return;
 
-    // 1. Calculate Score (Base)
-    // Auto-sort cards by value for the engine and display
+    // 1. Calculate Score (Base from poker cards)
     const sortedCards = [...selectedHand.cards].sort((a, b) => a.value - b.value);
     const sortedHand = { ...selectedHand, cards: sortedCards };
-    
     let breakdown = calculateScore(sortedHand, evalOptions);
-
-    // --- 立即生成视觉反馈 (与算分同步展示) ---
-    let newFeedbacks: {id: number, text: string, color: string}[] = [];
-    let newTftFeedbacks: {index: number, text: string, color: string, id: number}[] = [];
 
     const hasSpades = sortedHand.cards.some(c => c.suit === 'spades');
     const hasHearts = sortedHand.cards.some(c => c.suit === 'hearts');
     const hasClubs = sortedHand.cards.some(c => c.suit === 'clubs');
     const hasDiamonds = sortedHand.cards.some(c => c.suit === 'diamonds');
     const isSingle = sortedHand.cards.length === 1;
-    const isPair = ['Pair', 'Two Pair', 'Full House'].includes(sortedHand.type);
+    const isPair = ['Pair', 'Two Pair', 'Full House', 'Four of a Kind'].includes(sortedHand.type);
     const isStraight = ['Straight', 'Straight Flush', 'Royal Flush'].includes(sortedHand.type);
-
-    // 羁绊文字反馈
-    const bladeSynergy = activeSynergies.find(s => s.id === 'spades');
-    if (bladeSynergy && bladeSynergy.activeLevel > 0) {
-        const bonus = bladeSynergy.activeLevel === 1 ? 30 : bladeSynergy.activeLevel === 2 ? 80 : 0;
-        if (bonus > 0) newFeedbacks.push({ id: Date.now()+1, text: `锋刃: +${bonus}伤害`, color: 'text-cyan-400' });
-        if (bladeSynergy.activeLevel >= 3) newFeedbacks.push({ id: Date.now()+2, text: `锋刃: 终极伤害x3`, color: 'text-cyan-300' });
-    }
-    const fortressSynergy = activeSynergies.find(s => s.id === 'hearts');
-    if (fortressSynergy && fortressSynergy.activeLevel > 0) {
-        const bonus = fortressSynergy.activeLevel === 1 ? 20 : fortressSynergy.activeLevel === 2 ? 50 : 0;
-        if (bonus > 0) newFeedbacks.push({ id: Date.now()+3, text: `堡垒: +${bonus}护甲`, color: 'text-fuchsia-400' });
-    }
-    const venomSynergy = activeSynergies.find(s => s.id === 'clubs');
-    if (venomSynergy && venomSynergy.activeLevel > 0) {
-        const bonus = venomSynergy.activeLevel === 1 ? 2 : venomSynergy.activeLevel === 2 ? 6 : 6;
-        newFeedbacks.push({ id: Date.now()+4, text: `猛毒: +${bonus}层毒`, color: 'text-emerald-400' });
-    }
-    // 财阀 (转移到胜利结算，出牌时不弹加钱)
-
-    // 单卡插槽反馈 (严格匹配图鉴效果)
     const isFlush = ['Flush', 'Straight Flush', 'Royal Flush'].includes(sortedHand.type);
-    const is3Kind = ['Three of a Kind', 'Full House', 'Four of a Kind'].includes(sortedHand.type);
 
+    // Trackers for animation steps
+    let curChips = breakdown.chips;
+    let curMult = breakdown.mult;
+    let curTotal = curChips * curMult;
+
+    const animSequence: any[] = [];
+    const addSeq = (type: 'synergy'|'tft'|'mod', text: string, color: string, idx?: number) => {
+        animSequence.push({ type, text, color, index: idx, chips: curChips, mult: curMult, total: curTotal });
+    }
+
+    // --- 羁绊算分队列录入 ---
+    const calc = activeSynergies.find(s => s.id === 'calculator');
+    if (calc && calc.activeLevel >= 1 && isPair) {
+        curMult += 5;
+        curTotal = curChips * curMult;
+        addSeq('synergy', '算力: 倍率飙升', 'text-blue-400');
+    }
+
+    const blades = activeSynergies.find(s => s.id === 'spades');
+    const spadesCount = sortedHand.cards.filter(c => c.suit === 'spades').length;
+    if (blades && blades.activeLevel >= 1 && spadesCount > 0) {
+        let chipPerSpade = blades.activeLevel === 1 ? 15 : blades.activeLevel >= 2 ? 55 : 0;
+        if (blades.activeLevel >= 2) {
+            const hpLossPercent = Math.max(0, (player.maxHp - player.currentHp) / player.maxHp);
+            chipPerSpade *= (1 + Math.floor(hpLossPercent / 0.1));
+        }
+        curChips += (chipPerSpade * spadesCount);
+        if (blades.activeLevel >= 3) curChips += player.block;
+        curTotal = curChips * curMult;
+        addSeq('synergy', '锋刃: 筹码转化', 'text-cyan-400');
+    }
+
+    if (illusionistCacheScore > 0) {
+        curChips += illusionistCacheScore;
+        curTotal = curChips * curMult;
+        illusionistCacheScore = 0; // consumed
+        addSeq('synergy', '欺诈: 缓存释放', 'text-purple-400');
+    }
+
+    const assassin = activeSynergies.find(s => s.id === 'assassin');
+    if (assassin && assassin.activeLevel >= 1 && isSingle) {
+        curChips += 55; // (四条基础60 - 高牌基础5 = 55)
+        curMult += 6;   // (四条倍率7 - 高牌倍率1 = 6)
+        curTotal = curChips * curMult;
+        addSeq('synergy', '刺客: 致命处决', 'text-rose-500');
+    }
+
+    if (calc && calc.activeLevel >= 2 && isPair) {
+        curTotal *= 2;
+        addSeq('synergy', '算力: 双线程并发', 'text-blue-300');
+    }
+
+    const trojan = activeSynergies.find(s => s.id === 'clubs');
+    if (trojan && trojan.activeLevel >= 1 && hasClubs) addSeq('synergy', '木马: 植入病毒', 'text-emerald-400');
+    
+    const hacker = activeSynergies.find(s => s.id === 'surfer');
+    if (hacker && hacker.activeLevel >= 2 && isFlush) addSeq('synergy', '黑客: 权限绕过', 'text-purple-400');
+    
+    const geekSync = activeSynergies.find(s => s.id === 'geek');
+    if (geekSync && geekSync.activeLevel >= 2 && isStraight) addSeq('synergy', '极客: 内存溢出', 'text-green-400');
+
+    // --- 本回合缓存增益结算 ---
+    if (turnTemporaryMult > 0) {
+        curMult += turnTemporaryMult;
+        curTotal = curChips * curMult;
+        addSeq('synergy', `学徒算力汇聚: +${turnTemporaryMult}倍`, 'text-blue-300');
+    }
+
+    // --- TFT 卡牌插槽特效录入 (严格排队，动态加分) ---
     player.activeTFTCards.forEach((card, index) => {
-        let text = ""; let color = "text-white";
-        const id = card.templateId;
-        const s = card.stars;
+        let text = ""; let color = "text-cyan-300";
+        let triggered = false;
 
-        if (id === 'c1-blade-assassin' && isSingle && hasSpades) text = `+${s===1?15:s===2?35:100}伤害`;
-        else if (id === 'c1-fortress-calc' && isPair && hasHearts) text = `+${s===1?20:s===2?40:120}护甲`;
-        else if (id === 'c1-tycoon-calc' && isPair && hasDiamonds) text = `+$${s===1?1:s===2?2:6}`;
-        else if (id === 'c1-blade-surfer' && isFlush && hasSpades) text = `恢复${s===1?5:s===2?10:30}血`;
-        else if (id === 'c1-fortress-geek' && isStraight) text = `净化手牌`;
-        else if (id === 'c1-venom-geek' && isStraight) text = `毒伤爆发`;
-        else if (id === 'c2-blade-calc' && isPair && hasSpades) text = `尝试斩杀`;
-        else if (id === 'c2-fortress-surfer' && isFlush && hasHearts) text = `最大生命+${s===1?2:s===2?5:15}`;
-        else if (id === 'c2-venom-calc' && is3Kind) text = `毒素扩散`;
-        else if (id === 'c3-blade-geek' && isStraight && hasSpades) text = `永久增伤`;
-        else if (id === 'c3-venom-surfer' && isFlush && hasClubs) text = `百分比真伤`;
-        else if (id === 'c3-venom-assassin' && isSingle && hasClubs) text = `强行挂毒`;
-        else if (id === 'c4-blade-assassin' && isSingle && hasSpades) text = `伤害溅射`;
-        else if (id === 'c4-venom-mix' && isPair && hasClubs) text = `引爆毒层`;
-        else if (id === 'c5-blade-god' && hasSpades) text = `斩裂上限`;
-
-        if (text) {
-            if(text.includes('伤害')||text.includes('斩杀')||text.includes('上限')) color = "text-cyan-300";
-            if(text.includes('护甲')||text.includes('生命')||text.includes('血')) color = "text-fuchsia-400";
-            if(text.includes('毒')) color = "text-emerald-400";
-            if(text.includes('$')) color = "text-amber-400";
-            if(text.includes('净化')) color = "text-purple-400";
-            newTftFeedbacks.push({ index, text, color, id: Date.now() + index * 10 });
+        // 1. 卡牌永久养成属性注入
+        let statsTriggered = false;
+        if (card.stats?.chips) { curChips += card.stats.chips; statsTriggered = true; }
+        if (card.stats?.mult) { curMult += card.stats.mult; statsTriggered = true; }
+        if (statsTriggered) {
+            curTotal = curChips * curMult;
+            addSeq('tft', `[${card.name}] 属性加成`, 'text-white', index);
         }
-    });
 
-    if (newFeedbacks.length > 0) {
-        setFeedbackTexts(newFeedbacks);
-        setTimeout(() => setFeedbackTexts([]), 3000); // 延长持续时间，陪伴整个算分过程
-    }
-    if (newTftFeedbacks.length > 0) {
-        setTftFeedbacks(newTftFeedbacks);
-        setTimeout(() => setTftFeedbacks([]), 3000);
-    }
-    // --- 视觉反馈结束 ---
-
-    // 2. Apply Synergy Bonuses
-    const calculatorSynergy = activeSynergies.find(s => s.id === 'calculator');
-    if (calculatorSynergy && calculatorSynergy.activeLevel > 0) {
-        // Calculator: +2 / +6 / +15 Mult if hand contains Pair/Two Pair/Full House/Four of a Kind?
-        // Description: "包含对子时". Strictly "Pair"? Or "At least a Pair"?
-        // Usually "Contains a pair" includes Two Pair, Full House, 4oaK.
-        // Let's check if the hand type implies a pair.
-        const pairTypes = ['Pair', 'Two Pair', 'Three of a Kind', 'Full House', 'Four of a Kind'];
-        if (pairTypes.includes(selectedHand.type)) {
-            const bonus = calculatorSynergy.activeLevel === 1 ? 2 : calculatorSynergy.activeLevel === 2 ? 6 : 15;
-            breakdown.mult += bonus;
-            breakdown.multBreakdown.push({ source: '计算姬', value: bonus });
+        // 2. 独立机制判定
+        if (card.templateId === 'c5-01') {
+            curChips += 100 - breakdown.baseChips;
+            curMult += 8 - breakdown.baseMult;
+            curTotal = curChips * curMult;
+            text = `欧米伽协议`; color = "text-yellow-400"; triggered = true;
         }
-    }
-
-    const surferSynergy = activeSynergies.find(s => s.id === 'surfer');
-    if (surferSynergy && surferSynergy.activeLevel >= 2) {
-        // Surfer (4): Flush Mult x3
-        if (['Flush', 'Straight Flush', 'Royal Flush'].includes(selectedHand.type)) {
-            breakdown.mult *= 3;
-            breakdown.multBreakdown.push({ source: '冲浪者(4)', value: 3 });
+        if (card.templateId === 'c4-02' && isSingle && ['A','K'].includes(sortedHand.cards[0].rank)) {
+            const m = (card.stars === 1 ? 1.5 : card.stars === 2 ? 3 : 8);
+            curTotal = Math.floor(curTotal * m);
+            text = `处决乘算 x${m}`; color = "text-rose-500"; triggered = true;
         }
-    }
-
-    // Recalculate Total after Synergy
-    breakdown.total = breakdown.chips * breakdown.mult;
-
-    // 3. Apply "onCalculation" Modifiers
-    player.modifiers.filter(m => m.trigger === 'onCalculation').forEach(mod => {
-        if (mod.id === 'heart-firewall') {
-            // Handled in effect application, not score calc usually, but prompt says "provides Block".
-            // Let's handle non-score effects in the next step.
+        if (card.templateId === 'c2-04' && hasSpades && player.gold >= 5) {
+            const bonus = Math.floor(player.gold / 5) * (card.stars===1?2:card.stars===2?5:15) * sortedHand.cards.filter(c=>c.suit==='spades').length;
+            if (bonus > 0) { curChips += bonus; curTotal = curChips * curMult; text = `算力挖掘 +${bonus}`; color="text-amber-400"; triggered = true; }
         }
-        if (mod.id === 'overclock') {
-            if (selectedHand.type === 'Pair' || selectedHand.type === 'Two Pair') {
-                breakdown.mult += 2;
-                breakdown.multBreakdown.push({ source: '算力超载', value: 2 });
-                breakdown.total = breakdown.chips * breakdown.mult;
+        if (card.templateId === 'c3-01' && player.currentHp < player.maxHp) {
+            const lossPercent = Math.max(0, (player.maxHp - player.currentHp) / player.maxHp);
+            const stacks = Math.floor(lossPercent / 0.1);
+            if (stacks > 0) {
+                curChips += stacks * (card.stars===1?10:card.stars===2?25:80);
+                curMult += stacks * (card.stars===1?1:card.stars===2?2:6);
+                curTotal = curChips * curMult;
+                text = `狂血增幅`; color="text-rose-400"; triggered = true;
             }
         }
-        // Add other calculation modifiers here
+        if (card.templateId === 'c3-07' && isSingle && sortedHand.cards[0].suit === 'spades') {
+            const m = card.stars===1?2:card.stars===2?4:10;
+            curChips *= m; curTotal = curChips * curMult;
+            text = `处刑点数 x${m}`; color="text-purple-400"; triggered = true;
+        }
+        if (card.templateId === 'c4-03' && player.gold > 50) {
+            const bonus = (card.stars===1?5:card.stars===2?15:50) * sortedHand.cards.length;
+            curChips += bonus; curTotal = curChips * curMult;
+            text = `资本注入 +${bonus}`; color="text-amber-400"; triggered = true;
+        }
+        if (card.templateId === 'c5-04') {
+            const bonus = Math.floor(player.block * (card.stars===1?0.1:card.stars===2?0.3:1));
+            if (bonus > 0) { curMult += bonus; curTotal = curChips * curMult; text = `埃癸斯转倍 +${bonus}`; color="text-amber-400"; triggered = true; }
+        }
+        if (card.templateId === 'c5-05' && hasSpades) {
+            const m = card.stars===1?2:card.stars===2?5:20;
+            curChips *= m; curTotal = curChips * curMult;
+            text = `真理乘算 x${m}`; color="text-slate-100"; triggered = true;
+        }
+        if (card.templateId === 'c1-08' && isPair) { 
+            const bonus = card.stars===1?1:card.stars===2?2:6;
+            curMult += bonus; curTotal = curChips * curMult;
+            text = `临时倍率+${bonus}`; color="text-blue-400"; triggered = true; 
+        }
+
+        // 仅动画播报 (底层扣血/护甲结算移交 applyHandEffects)
+        if (card.templateId === 'c1-01' && isSingle) { text = `高牌蓄势`; triggered = true; }
+        if (card.templateId === 'c1-04' && isStraight) { text = `植入木马`; color="text-emerald-400"; triggered = true; }
+        if (card.templateId === 'c1-06' && isSingle) { text = `坚壁防御`; color="text-fuchsia-400"; triggered = true; }
+        if (card.templateId === 'c1-07' && isFlush && hasClubs) { text = `毒液回血`; color="text-emerald-300"; triggered = true; }
+        if (card.templateId === 'c2-01' && isFlush && hasHearts) { text=`血祭扩容`; color="text-rose-500"; triggered = true; }
+        if (card.templateId === 'c2-02' && (curChips % 2 !== 0)) { text=`病毒裂变`; color="text-emerald-400"; triggered = true; }
+        if (card.templateId === 'c2-03' && !isPair) { text=`孤高转化`; color="text-fuchsia-400"; triggered = true; }
+        if (card.templateId === 'c2-07' && isStraight) { text=`逻辑守卫`; color="text-fuchsia-400"; triggered = true; }
+        if (card.templateId === 'c3-03' && isStraight && hasSpades) { text=`皇家复制`; color="text-cyan-300"; triggered = true; }
+        if (card.templateId === 'c3-05' && isFlush) { text=`生化治愈`; color="text-emerald-300"; triggered = true; }
+        if (card.templateId === 'c4-01' && isStraight) { text=`时间回溯`; color="text-blue-300"; triggered = true; }
+        if (card.templateId === 'c4-05' && isFlush) { text=`深网感染`; color="text-emerald-400"; triggered = true; }
+        if (card.templateId === 'c4-06' && selectedHand.type === 'Four of a Kind') { text=`零度转化`; color="text-blue-200"; triggered = true; }
+
+        if (triggered) addSeq('tft', text, color, index);
     });
 
-    // 3. Show Calculation UI
+    // Handle legacy Modifiers if any
+    player.modifiers.filter(m => m.trigger === 'onCalculation').forEach(mod => {
+        if (mod.id === 'overclock' && (selectedHand.type === 'Pair' || selectedHand.type === 'Two Pair')) {
+            curMult += 2;
+            curTotal = curChips * curMult;
+            addSeq('mod', '算力超载', 'text-blue-300');
+        }
+    });
+
+    // 覆盖最终算分结果
+    breakdown.chips = curChips;
+    breakdown.mult = curMult;
+    breakdown.total = curTotal;
+
+    // 提交数据到渲染管道，开启沉浸式跳动
+    setScoringSequence(animSequence);
     setScoreBreakdown(breakdown);
     setPlayingCards(sortedHand.cards);
     setIsCalculating(true);
@@ -891,47 +1038,79 @@ export default function GameBoard() {
         poisonStacks += bonus;
     }
 
-    // 财阀加钱已移至回合胜利阶段
-
-    // --- TFT CARD EFFECTS (精准映射独立效果) ---
-    const hasSpades = selectedHand.cards.some(c => c.suit === 'spades');
-    const hasHearts = selectedHand.cards.some(c => c.suit === 'hearts');
-    const hasClubs = selectedHand.cards.some(c => c.suit === 'clubs');
-    const hasDiamonds = selectedHand.cards.some(c => c.suit === 'diamonds');
-    const isSingle = selectedHand.cards.length === 1;
-    const isPair = ['Pair', 'Two Pair', 'Full House', 'Four of a Kind'].includes(selectedHand.type);
-    const isFlush = ['Flush', 'Straight Flush', 'Royal Flush'].includes(selectedHand.type);
-    const isStraight = ['Straight', 'Straight Flush', 'Royal Flush'].includes(selectedHand.type);
-    const is3Kind = ['Three of a Kind', 'Full House', 'Four of a Kind'].includes(selectedHand.type);
-
+    // --- COMBAT NUMBERS & CARD EFFECTS ---
     let healAmount = 0;
     let maxHpGain = 0;
-    let enemyCurrentHpDmg = 0;
-    let enemyMaxHpDmg = 0;
+    let selfHpLoss = 0;
+    let trueDamageExt = 0;
+    
+    const isSingle = selectedHand.cards.length === 1;
+    const isPair = ['Pair', 'Two Pair', 'Full House', 'Four of a Kind'].includes(selectedHand.type);
+    const isStraight = ['Straight', 'Straight Flush', 'Royal Flush'].includes(selectedHand.type);
+    const isFlush = ['Flush', 'Straight Flush', 'Royal Flush'].includes(selectedHand.type);
+    const clubsCount = selectedHand.cards.filter(c => c.suit === 'clubs').length;
+
+    // Trojan (Clubs) Poison Applying
+    const trojan = activeSynergies.find(s => s.id === 'clubs');
+    if (trojan && trojan.activeLevel >= 1 && clubsCount > 0) {
+        poisonStacks += clubsCount; // Base Synergy
+    }
 
     player.activeTFTCards.forEach((card) => {
         const id = card.templateId;
         const s = card.stars;
 
-        if (id === 'c1-blade-assassin' && isSingle && hasSpades) rawDamage += s===1?15:s===2?35:100;
-        if (id === 'c1-fortress-calc' && isPair && hasHearts) blockGain += s===1?20:s===2?40:120;
-        if (id === 'c1-tycoon-calc' && isPair && hasDiamonds) goldGain += s===1?1:s===2?2:6;
-        if (id === 'c1-blade-surfer' && isFlush && hasSpades) healAmount += s===1?5:s===2?10:30;
-        if (id === 'c1-venom-geek' && isStraight) enemyCurrentHpDmg += (enemy.statusEffects.find(e=>e.type==='poison')?.stacks || 0) * (s===1?1:s===2?2:5);
-        if (id === 'c2-blade-calc' && isPair && hasSpades) {
-            if (enemy.currentHp / enemy.maxHp <= (s===1?0.1:s===2?0.2:0.5)) enemyCurrentHpDmg += enemy.currentHp;
+        // c1-01 暗巷快刀 (放在了死亡判定里)
+        // c1-04 见习黑客
+        if (id === 'c1-04' && isStraight) poisonStacks += s===1?2:s===2?5:15;
+        // c1-06 盾卫新兵
+        if (id === 'c1-06' && isSingle) blockGain += s===1?15:s===2?35:100;
+        // c1-07 毒液试管
+        if (id === 'c1-07' && isFlush) healAmount += clubsCount * (s===1?1:s===2?2:6);
+        // c1-08 算力学徒 (累加到本回合缓存供下次出牌使用)
+        if (id === 'c1-08' && isPair) turnTemporaryMult += s===1?1:s===2?2:6;
+        // c2-01 狂血海妖
+        if (id === 'c2-01' && isFlush && selectedHand.cards.some(c=>c.suit==='hearts')) {
+             selfHpLoss += s===1?5:s===2?10:25; maxHpGain += s===1?5:s===2?10:25;
         }
-        if (id === 'c2-fortress-surfer' && isFlush && hasHearts) maxHpGain += s===1?2:s===2?5:15;
-        if (id === 'c2-venom-calc' && is3Kind) poisonStacks += (enemy.statusEffects.find(e=>e.type==='poison')?.stacks || 0) * (s===1?1:s===2?2:4);
-        if (id === 'c3-blade-geek' && isStraight && hasSpades) rawDamage += s===1?20:s===2?50:100; 
-        if (id === 'c3-venom-surfer' && isFlush && hasClubs) enemyCurrentHpDmg += enemy.currentHp * (s===1?0.05:s===2?0.1:0.25);
-        if (id === 'c3-venom-assassin' && isSingle && hasClubs) poisonStacks += s===1?15:s===2?35:100;
-        if (id === 'c4-blade-assassin' && isSingle && hasSpades) rawDamage *= (s===1?2:s===2?3:7); 
-        if (id === 'c4-venom-mix' && isPair && hasClubs) enemyCurrentHpDmg += (enemy.statusEffects.find(e=>e.type==='poison')?.stacks || 0) * (s===1?2:s===2?4:10);
-        if (id === 'c5-blade-god' && hasSpades) enemyMaxHpDmg += enemy.maxHp * (s===1?0.05:s===2?0.15:1);
+        // c2-02 病毒裂变 (当前筹码为奇数使毒伤百分比提升)
+        if (id === 'c2-02' && (breakdown.chips % 2 !== 0)) {
+             poisonStacks += Math.floor((enemy.statusEffects.find(e=>e.type==='poison')?.stacks || 0) * (s===1?0.2:s===2?0.5:1));
+        }
+        // c2-03 孤高骑士
+        if (id === 'c2-03' && !isPair) blockGain += Math.floor(rawDamage * (s===1?0.1:s===2?0.25:0.7));
+        // c2-07 逻辑守卫 (Simplified to current turn)
+        if (id === 'c2-07' && isStraight) blockGain += s===1?20:s===2?50:150;
+        // c3-05 生化传播者
+        if (id === 'c3-05' && isFlush) {
+            const currentPsn = enemy.statusEffects.find(e=>e.type==='poison')?.stacks || 0;
+            healAmount += currentPsn * (s===1?0.1:s===2?0.25:0.8);
+        }
+        // c3-07 处刑之刃
+        if (id === 'c3-07' && isSingle && selectedHand.cards[0].suit === 'spades') isPiercing = true;
+        // c4-01 时间重塑者
+        if (id === 'c4-01' && isStraight) healAmount += 999;
+        // c4-05 深网黑客
+        if (id === 'c4-05' && isFlush) poisonStacks += Math.floor(rawDamage * (s===1?0.1:s===2?0.3:1));
+        // c4-06 绝对零度
+        if (id === 'c4-06' && selectedHand.type === 'Four of a Kind') maxHpGain += Math.floor(player.block * (s===1?0.05:s===2?0.15:0.5));
+        // c5-01 欧米伽终端 (已在算分处挂载)
+        // c5-05 达摩克利斯
+        if (id === 'c5-05') isPiercing = true;
     });
 
-    // Apply Modifiers
+    // c1-03 铁壁算盘 (全局护甲获取率提升)
+    const c103 = player.activeTFTCards.find(c => c.templateId === 'c1-03');
+    if (c103 && blockGain > 0) {
+        const heartsInDeck = player.deck.filter(c => c.suit === 'hearts').length;
+        blockGain = Math.floor(blockGain * (1 + (heartsInDeck * (c103.stars===1?0.02:c103.stars===2?0.05:0.15))));
+    }
+
+    // Assassin (4) Execute
+    const assassin = activeSynergies.find(s => s.id === 'assassin');
+    if (assassin && assassin.activeLevel >= 2 && isSingle && enemy.currentHp <= player.maxHp * 2) {
+         trueDamageExt += enemy.currentHp; 
+    }
 
     // Suit Effects
     // (Note: Base game has no suit effects, but we keep the logic for future modifiers)
@@ -1007,8 +1186,53 @@ export default function GameBoard() {
               damageDealt = 0;
           }
       }
-      // 追加卡牌直接扣除血量的效果 (无视护甲)
-      let newHp = Math.max(0, prev.currentHp - damageDealt - enemyCurrentHpDmg - enemyMaxHpDmg);
+      // True Damage Piercing
+      if (isPiercing) {
+          damageDealt = rawDamage; // Skip block deduction completely
+          currentBlock = prev.block;
+      }
+      
+      let newHp = Math.max(0, prev.currentHp - damageDealt - trueDamageExt);
+      
+      // Kill & Overkill Visual Feedbacks
+      let killFbs: any[] = [];
+
+      // c1-01 暗巷快刀 Kill Check
+      if (newHp <= 0 && isSingle) {
+          player.activeTFTCards.forEach((c, idx) => {
+             if (c.templateId === 'c1-01') {
+                 killFbs.push({ index: idx, text: `杀戮成长`, color: 'text-rose-400', id: Date.now()+idx });
+                 c.stats = { ...c.stats, chips: (c.stats?.chips || 0) + (c.stars===1?3:c.stars===2?8:25) };
+             }
+          });
+      }
+      // c2-08 赏金猎手 Kill Check
+      if (newHp <= 0 && isSingle) {
+          player.activeTFTCards.forEach((c, idx) => {
+             if (c.templateId === 'c2-08' && Math.random() < [0.2, 0.5, 1][c.stars-1]) {
+                 goldGain += 5;
+                 killFbs.push({ index: idx, text: `赏金爆金+$5`, color: 'text-amber-400', id: Date.now()+idx });
+             }
+          });
+      }
+      // c4-07 血色盛宴 Overkill
+      if (newHp <= 0 && damageDealt > prev.currentHp) {
+          const overkill = damageDealt - prev.currentHp;
+          player.activeTFTCards.forEach((c, idx) => {
+             if (c.templateId === 'c4-07') {
+                 const amt = Math.floor(overkill * (c.stars===1?0.01:c.stars===2?0.05:0.2));
+                 if (amt > 0) {
+                     healAmount += amt;
+                     killFbs.push({ index: idx, text: `溢出吸血+${amt}`, color: 'text-rose-500', id: Date.now()+idx });
+                 }
+             }
+          });
+      }
+
+      if (killFbs.length > 0) {
+          setTftFeedbacks(killFbs);
+          setTimeout(() => setTftFeedbacks([]), 2500);
+      }
 
       let newIntent = { ...prev.intent };
       if (player.modifiers.some(m => m.id === 'straight-obsession') && (selectedHand.type === 'Straight' || selectedHand.type === 'Straight Flush')) {
@@ -1054,14 +1278,6 @@ export default function GameBoard() {
           handsConsumed = 0;
       }
 
-      // Geek (4): Refund Hand if Straight
-      const geek = activeSynergies.find(s => s.id === 'geek');
-      if (geek && geek.activeLevel >= 2) {
-          if (['Straight', 'Straight Flush', 'Royal Flush'].includes(selectedHand.type)) {
-              handsConsumed = 0;
-          }
-      }
-
       let discardsGained = 0;
       if (prev.modifiers.some(m => m.id === 'four-of-a-kind-root') && selectedHand.type === 'Four of a Kind') {
           discardsGained = 2;
@@ -1073,9 +1289,40 @@ export default function GameBoard() {
           finalHand = finalHand.map(c => ({...c, isLocked: false, isHidden: false}));
       }
 
+      // 极客 (4) 内存溢出
+      const geek = activeSynergies.find(s => s.id === 'geek');
+      if (geek && geek.activeLevel >= 2 && isStraight) {
+          handsConsumed = -1; // 恢复1次 = 消耗-1
+          discardsGained += 2;
+      }
+
+      // 黑客 (4) 同花不耗次数
+      const hacker = activeSynergies.find(s => s.id === 'surfer');
+      if (hacker && hacker.activeLevel >= 2 && isFlush) {
+          handsConsumed = 0;
+      }
+      if (isFlush && prev.activeTFTCards.some(c => c.templateId === 'c4-05')) {
+          handsConsumed = 0;
+      }
+      
+      // c3-03 皇家复制 (黑桃顺子概率把黑桃塞入弃牌堆养牌库)
+      const c303 = prev.activeTFTCards.find(c => c.templateId === 'c3-03');
+      if (c303 && isStraight && hasSpades && Math.random() < (c303.stars===1?0.2:c303.stars===2?0.5:1)) {
+          const spades = selectedHand.cards.filter(c => c.suit === 'spades');
+          if (spades.length > 0) newDiscard.push({...spades[Math.floor(Math.random()*spades.length)], id: `clone-${Date.now()}`, isSelected: false});
+      }
+
+      // 破壁人 (2): 透支出牌
+      let overdraftHp = 0;
+      const cheater = activeSynergies.find(s => s.id === 'cheater');
+      if (prev.hands <= 0 && cheater && cheater.activeLevel >= 1) {
+          handsConsumed = 0; // 不再扣除次数
+          overdraftHp = Math.floor(prev.currentHp * 0.15);
+      }
+
       return {
         ...prev,
-        currentHp: Math.min(prev.maxHp + maxHpGain, prev.currentHp + healAmount),
+        currentHp: Math.max(1, Math.min(prev.maxHp + maxHpGain, prev.currentHp + healAmount - selfHpLoss - overdraftHp)),
         maxHp: prev.maxHp + maxHpGain,
         hand: finalHand,
         discardPile: newDiscard,
@@ -1137,11 +1384,39 @@ export default function GameBoard() {
           setEnemy(e => e ? { ...e, currentHp: Math.max(0, e.currentHp - memoryDamage) } : null);
       }
       
-      // 剧毒吹箭: 弃牌上毒
+     // 新版羁绊和卡牌的弃牌逻辑 & 视觉反馈
       let discardPoison = 0;
-      prev.activeTFTCards.forEach(card => {
-          if (card.templateId === 'c1-venom-magician') discardPoison += card.stars === 1 ? 2 : card.stars === 2 ? 4 : 12;
+      let newTftFbs: any[] = [];
+      let goldEarned = 0;
+      let activeCardsUpdated = [...prev.activeTFTCards];
+
+      // Illusionist (4) 数据劫持
+      const illusionist = calculateActiveSynergies(prev.activeTFTCards).find(s => s.id === 'magician');
+      if (illusionist && illusionist.activeLevel >= 2) {
+          illusionistCacheScore += selectedCards.reduce((acc, c) => acc + c.value, 0);
+          setFeedbackTexts([{ id: Date.now(), text: `数据劫持`, color: 'text-purple-400' }]);
+          setTimeout(() => setFeedbackTexts([]), 2000);
+      }
+
+      activeCardsUpdated = activeCardsUpdated.map((card, idx) => {
+          // c2-05 幻影魔术师 (梅花转木马)
+          if (card.templateId === 'c2-05') {
+              const clubs = selectedCards.filter(c => c.suit === 'clubs').length;
+              if (clubs > 0) {
+                  discardPoison += clubs * (card.stars === 1 ? 3 : card.stars === 2 ? 8 : 25);
+                  newTftFbs.push({ index: idx, text: `病毒转化`, color: 'text-emerald-400', id: Date.now()+idx });
+              }
+          }
+          // c4-08 幻象核心 (弃掉黑桃永久加点数)
+          if (card.templateId === 'c4-08') {
+              const spades = selectedCards.filter(c => c.suit === 'spades').length;
+              if (spades > 0) {
+                  newTftFbs.push({ index: idx, text: `幻象成长`, color: 'text-purple-300', id: Date.now()+idx });
+              }
+          }
+          return card;
       });
+
       if (discardPoison > 0) {
           setEnemy(e => {
              if (!e) return null;
@@ -1155,7 +1430,36 @@ export default function GameBoard() {
 
       const selectedIds = new Set(selectedCards.map(c => c.id));
       const remainingHand = prev.hand.filter(c => !selectedIds.has(c.id));
-      const newDiscard = [...prev.discardPile, ...selectedCards.map(c => ({...c, isSelected: false}))];
+
+      // 虚空银行家 c3-02 (永久删卡换钱)
+      let cardsToDiscard = [...selectedCards.map(c => ({...c, isSelected: false}))];
+      const bankerIndex = prev.activeTFTCards.findIndex(c => c.templateId === 'c3-02');
+      if (bankerIndex !== -1) {
+          const banker = prev.activeTFTCards[bankerIndex];
+          const chance = banker.stars === 1 ? 0.15 : banker.stars === 2 ? 0.4 : 1;
+          let deleted = 0;
+          cardsToDiscard = cardsToDiscard.filter(c => {
+              if (Math.random() < chance) { goldEarned += 3; deleted++; return false; }
+              return true;
+          });
+          if (deleted > 0) {
+              newTftFbs.push({ index: bankerIndex, text: `虚空删卡+$${deleted*3}`, color: 'text-amber-400', id: Date.now()+bankerIndex });
+          }
+      }
+
+      // c4-08 点数附加 (应用到 cardsToDiscard)
+      const phantom = prev.activeTFTCards.find(c => c.templateId === 'c4-08');
+      if (phantom) {
+          const bonus = phantom.stars === 1 ? 3 : phantom.stars === 2 ? 8 : 25;
+          cardsToDiscard = cardsToDiscard.map(c => c.suit === 'spades' ? { ...c, value: c.value + bonus } : c);
+      }
+
+      if (newTftFbs.length > 0) {
+          setTftFeedbacks(newTftFbs);
+          setTimeout(() => setTftFeedbacks([]), 2000);
+      }
+
+      const newDiscard = [...prev.discardPile, ...cardsToDiscard];
       
       // Draw replacements
       const drawCount = selectedCards.length;
@@ -1180,7 +1484,9 @@ export default function GameBoard() {
         deck: currentDeck,
         discardPile: currentDiscard,
         pendingCardIds: [],
-        discards: prev.discards - 1
+        discards: prev.discards - 1,
+        gold: prev.gold + goldEarned,
+        activeTFTCards: activeCardsUpdated
       };
     });
   };
@@ -1189,137 +1495,199 @@ export default function GameBoard() {
   const endTurn = () => {
     if (gameStatus !== 'playing' || !enemy) return;
 
-    // 1. Player Turn End Modifiers
+    turnTemporaryMult = 0; // 回合结束清空全局临时倍率
+
+    const fortress = activeSynergies.find(s => s.id === 'hearts');
+    const trojan = activeSynergies.find(s => s.id === 'clubs');
+    const syndicate = activeSynergies.find(s => s.id === 'diamonds');
+
+    // 1. Passive Damage (Poison & Item Thorns)
     let thornsDamage = 0;
     if (player.modifiers.some(m => m.id === 'thorns-protocol')) {
         thornsDamage = Math.floor(player.block / 5) * 2;
     }
-    // 堡垒6: 反弹100%护甲值
-    const fortress = activeSynergies.find(s => s.id === 'hearts');
-    if (fortress && fortress.activeLevel >= 3) {
-        thornsDamage += player.block;
-    }
 
-    // 2. Enemy Poison Damage & Thorns
-    let enemyPoisonDamage = 0;
     const poisonEffect = enemy.statusEffects.find(e => e.type === 'poison');
-    if (poisonEffect) {
-        enemyPoisonDamage = poisonEffect.stacks;
-    }
-    // 猛毒6: 毒伤翻倍
-    const venom = activeSynergies.find(s => s.id === 'clubs');
-    if (venom && venom.activeLevel >= 3) {
-        enemyPoisonDamage *= 2; 
+    const trojanStacks = poisonEffect ? poisonEffect.stacks : 0;
+    const enemyPoisonDamage = trojanStacks; 
+    
+    // c5-03 凋零 (毒伤暴击)
+    let finalPoisonDamage = enemyPoisonDamage;
+    const witherCard = player.activeTFTCards.find(c => c.templateId === 'c5-03');
+    if (witherCard && Math.random() < (witherCard.stars===1?0.2:witherCard.stars===2?0.5:1)) {
+        finalPoisonDamage *= 3;
+        setFeedbackTexts(prev => [...prev, { id: Date.now(), text: `毒伤暴击`, color: 'text-emerald-400' }]);
     }
 
-    const totalPassiveDamage = enemyPoisonDamage + thornsDamage;
+    const totalPassiveDamage = finalPoisonDamage + thornsDamage;
 
-    // Apply Passive Damage to Enemy
-    let enemyAlive = true;
+    let currentEnemyHp = Math.max(0, enemy.currentHp - totalPassiveDamage);
+    const keepPoison = trojan && trojan.activeLevel >= 2;
+    let nextStatusEffects = enemy.statusEffects.map(e => {
+        if (e.type === 'poison') {
+            return keepPoison ? e : { ...e, stacks: Math.max(0, e.stacks - 1) };
+        }
+        return e;
+    }).filter(e => e.stacks > 0);
+
+    if (currentEnemyHp <= 0) {
+        setEnemy(prev => prev ? { ...prev, currentHp: 0, statusEffects: nextStatusEffects } : null);
+        return;
+    }
+
+    // 2. Enemy Action & 病毒爆发 (Trojan 6)
+    const intent = enemy.intent;
+    let trojanExploded = false;
+
+    // c4-04 木马母体: 怪物攻击前受木马真实伤害，毒死则取消攻击
+    const c404 = player.activeTFTCards.find(c => c.templateId === 'c4-04');
+    if (c404 && intent.type === 'attack' && trojanStacks > 0) {
+        const preDmg = trojanStacks * (c404.stars===1?1:c404.stars===2?3:10);
+        currentEnemyHp = Math.max(0, currentEnemyHp - preDmg);
+        setFlyingDamage({ amount: preDmg, isFlying: true });
+        if (currentEnemyHp <= 0) {
+            intent.type = 'defend';
+            intent.value = 0;
+        }
+    }
+
+    // Trojan (6): 怪物激活意图时引爆所有木马
+    if (trojan && trojan.activeLevel >= 3 && trojanStacks > 0) {
+        const explosionDamage = trojanStacks * player.maxHp;
+        currentEnemyHp = Math.max(0, currentEnemyHp - explosionDamage);
+        nextStatusEffects = nextStatusEffects.filter(e => e.type !== 'poison');
+        trojanExploded = true;
+        setFlyingDamage({ amount: explosionDamage, isFlying: true });
+        setFeedbackTexts(prev => [...prev, { id: Date.now()+1, text: `木马引爆!`, color: 'text-emerald-400' }]);
+    }
+
+    if (currentEnemyHp <= 0) {
+        setEnemy(prev => prev ? { ...prev, currentHp: 0, statusEffects: nextStatusEffects } : null);
+        return;
+    }
+
+    // 3. Resolve Intent Attack
+    let damageToPlayer = 0;
+    let reflectDamage = 0;
+    let maxHpGain = 0;
+    let goldLost = 0;
+
+    if (intent.type === 'attack') {
+        let incomingDamage = intent.value || 0;
+        
+        // Trojan (2): 木马削减意图伤害
+        if (trojan && trojan.activeLevel >= 1) {
+            incomingDamage = Math.max(0, incomingDamage - trojanStacks);
+        }
+
+        // Fortress (6): 护甲反弹真实伤害
+        if (fortress && fortress.activeLevel >= 3) {
+            reflectDamage = Math.min(incomingDamage, player.block);
+        }
+
+        let remainingDmg = Math.max(0, incomingDamage - player.block);
+
+        // Syndicate (6): 金币抵挡真实伤害 (1金=3甲)
+        if (remainingDmg > 0 && syndicate && syndicate.activeLevel >= 3) {
+            const goldNeeded = Math.ceil(remainingDmg / 3);
+            if (player.gold >= goldNeeded) {
+                goldLost += goldNeeded;
+                remainingDmg = 0;
+            } else {
+                goldLost += player.gold;
+                remainingDmg -= player.gold * 3;
+            }
+        }
+
+        // c3-08: 算力印钞机
+        const printCard = player.activeTFTCards.find(c => c.templateId === 'c3-08');
+        if (remainingDmg > 0 && printCard && player.gold > goldLost) {
+            const ratio = printCard.stars === 1 ? 2 : printCard.stars === 2 ? 5 : 15;
+            const availableGold = player.gold - goldLost;
+            const goldNeeded = Math.ceil(remainingDmg / ratio);
+            if (availableGold >= goldNeeded) {
+                goldLost += goldNeeded;
+                remainingDmg = 0;
+            } else {
+                goldLost += availableGold;
+                remainingDmg -= availableGold * ratio;
+            }
+        }
+
+        damageToPlayer = remainingDmg;
+
+        // Fortress (4): 受到真实扣血伤害时，永久加生命上限
+        if (damageToPlayer > 0 && fortress && fortress.activeLevel >= 2) {
+            maxHpGain += damageToPlayer;
+            setFeedbackTexts(prev => [...prev, { id: Date.now()+2, text: `防线增殖 +${damageToPlayer}上限`, color: 'text-fuchsia-400' }]);
+        }
+    }
+
+    // c3-04 灵魂熔炉: 受到扣血伤害时，当前卡牌永久加基础倍率
+    let activeCardsUpdatedForHit = [...player.activeTFTCards];
+    if (damageToPlayer > 0) {
+        activeCardsUpdatedForHit = activeCardsUpdatedForHit.map(c => {
+            if (c.templateId === 'c3-04') {
+                return { ...c, stats: { ...c.stats, mult: (c.stats?.mult || 0) + (c.stars===1?1:c.stars===2?3:10) } };
+            }
+            return c;
+        });
+    }
+
+    if (reflectDamage > 0) {
+        currentEnemyHp = Math.max(0, currentEnemyHp - reflectDamage);
+        setFeedbackTexts(prev => [...prev, { id: Date.now()+3, text: `荆棘反弹`, color: 'text-rose-400' }]);
+    }
+
+    // Apply Enemy Updates
     setEnemy(prev => {
         if (!prev) return null;
-        const newHp = Math.max(0, prev.currentHp - totalPassiveDamage);
-        if (newHp <= 0) enemyAlive = false;
-        
+        let blockGain = intent.type === 'defend' ? (intent.value || 0) : 0;
         return {
             ...prev,
-            currentHp: newHp,
-            statusEffects: prev.statusEffects.map(e => e.type === 'poison' ? { ...e, stacks: Math.max(0, e.stacks - 1) } : e).filter(e => e.stacks > 0)
+            currentHp: currentEnemyHp,
+            block: prev.block + blockGain,
+            statusEffects: nextStatusEffects
         };
     });
 
-    if (!enemyAlive) return;
-
-    // 3. Enemy Action (Intent)
-    const intent = enemy.intent;
-    
-    // 触发主角受击特效
-    let damageToPlayer = 0;
-    if (intent.type === 'attack') {
-        damageToPlayer = Math.max(0, (intent.value || 0) - player.block);
-    }
     if (damageToPlayer > 0) {
         setPlayerDamageTaken(damageToPlayer);
         setPlayerHitState('hit');
         setTimeout(() => setPlayerHitState('idle'), 400);
     }
-    
+
+    // 4. Reset Player State & Draw
     setPlayer(prev => {
         let newHp = prev.currentHp;
         let newHand = [...prev.hand];
-        let newDiscard = [...prev.discardPile];
         let newDeck = [...prev.deck];
 
-        // Attack
-        if (intent.type === 'attack') {
-            const damage = Math.max(0, (intent.value || 0) - prev.block);
-            newHp -= damage;
-        }
-
-        // Lock
+        if (intent.type === 'attack') newHp -= damageToPlayer;
         if (intent.type === 'lock') {
             const count = intent.value || 1;
-            const availableIndices = newHand.map((_, i) => i).filter(i => !newHand[i].isLocked);
-            const indicesToLock = availableIndices.sort(() => Math.random() - 0.5).slice(0, count);
-            indicesToLock.forEach(idx => {
+            const avail = newHand.map((_, i) => i).filter(i => !newHand[i].isLocked);
+            avail.sort(() => Math.random() - 0.5).slice(0, count).forEach(idx => {
                 newHand[idx] = { ...newHand[idx], isLocked: true, isSelected: false };
             });
         }
-
-        // Blind
         if (intent.type === 'blind') {
             const count = intent.value || 3;
-            const availableIndices = newHand.map((_, i) => i).filter(i => !newHand[i].isHidden);
-            const indicesToBlind = availableIndices.sort(() => Math.random() - 0.5).slice(0, count);
-            indicesToBlind.forEach(idx => {
+            const avail = newHand.map((_, i) => i).filter(i => !newHand[i].isHidden);
+            avail.sort(() => Math.random() - 0.5).slice(0, count).forEach(idx => {
                 newHand[idx] = { ...newHand[idx], isHidden: true };
             });
         }
-
-        // Junk (Inject Null)
         if (intent.type === 'junk') {
             const count = intent.value || 2;
             for (let i = 0; i < count; i++) {
-                newDeck.push({
-                    id: `junk-${Date.now()}-${i}`,
-                    suit: 'spades', // Dummy
-                    rank: '2', // Dummy
-                    value: 0,
-                    isSelected: false,
-                    isJunk: true
-                });
+                newDeck.push({ id: `junk-${Date.now()}-${i}`, suit: 'spades', rank: '2', value: 0, isSelected: false, isJunk: true });
             }
             newDeck = shuffleDeck(newDeck);
         }
 
-        return {
-            ...prev,
-            currentHp: Math.max(0, newHp),
-            hand: newHand,
-            deck: newDeck,
-            discardPile: newDiscard
-        };
-    });
-
-    // 4. Enemy Defend
-    if (intent.type === 'defend') {
-        setEnemy(prev => prev ? ({ ...prev, block: prev.block + (intent.value || 0) }) : null);
-    }
-
-    // 5. Reset Player & Draw
-    setPlayer(prev => {
-        // Clear temp states (keep Locked/Hidden? Prompt says "Lock... this turn forbidden". So maybe clear lock next turn?
-        // "Deadlock... randomly lock... forbid play/discard THIS turn".
-        // So we should clear locks at start of next turn (which is now).
-        // Wait, "Blind... underlying data exists... blind guess".
-        // Usually Blind lasts until played or discarded.
-        // Let's clear Lock, but keep Blind? Or clear both?
-        // Slay the Spire clears "Entangled" next turn.
-        // Let's clear Locks. Keep Blind?
-        // Prompt doesn't specify duration. Let's clear both for fairness unless specified.
-        
-        const newDiscard = [...prev.discardPile, ...prev.hand.map(c => ({...c, isSelected: false, isLocked: false, isHidden: false}))];
-        let currentDeck = [...prev.deck];
+        const newDiscard = [...prev.discardPile, ...newHand.map(c => ({...c, isSelected: false, isLocked: false, isHidden: false}))];
+        let currentDeck = [...newDeck];
         let currentDiscard = [...newDiscard];
 
         if (currentDeck.length < 8) {
@@ -1330,31 +1698,38 @@ export default function GameBoard() {
 
         const { drawn, remaining } = drawCards(currentDeck, 8);
         
-        // 魔术师增加基础弃牌，老千发牌童子结算剩余手牌换钱
-        let extraGold = 0;
-        prev.activeTFTCards.forEach(c => {
-            if (c.templateId === 'c1-tycoon-cheater') extraGold += prev.hands * (c.stars===1?1:c.stars===2?2:5);
-            if (c.templateId === 'c2-venom-cheater') extraGold += Math.floor((enemy.statusEffects.find(e=>e.type==='poison')?.stacks || 0) / 10) * (c.stars===1?1:c.stars===2?2:6);
-        });
-
         let baseDiscards = 3;
         const magician = activeSynergies.find(s => s.id === 'magician');
         if (magician && magician.activeLevel >= 1) baseDiscards += 2;
 
+        // Fortress (2/4/6) 护甲保留
+        let retainRate = 0;
+        if (fortress) {
+            if (fortress.activeLevel === 1) retainRate = 0.3;
+            if (fortress.activeLevel === 2) retainRate = 0.7;
+            if (fortress.activeLevel >= 3) retainRate = 1.0;
+        }
+        // c5-04 神创堡垒绝对保留
+        if (prev.activeTFTCards.some(c => c.templateId === 'c5-04')) retainRate = 1.0;
+        
+        const retainedBlock = Math.floor(prev.block * retainRate);
+
         return {
             ...prev,
+            currentHp: Math.max(0, newHp),
+            maxHp: prev.maxHp + maxHpGain,
             hand: drawn,
             deck: remaining,
             discardPile: currentDiscard,
             pendingCardIds: [],
             hands: 3,
             discards: baseDiscards,
-            block: 0,
-            gold: prev.gold + extraGold
+            block: retainedBlock,
+            gold: prev.gold - goldLost,
+            activeTFTCards: activeCardsUpdatedForHit
         };
     });
 
-    // 6. Generate Next Intent
     generateNextIntent();
   };
 
@@ -1471,7 +1846,7 @@ export default function GameBoard() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4"
+            className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[300] flex items-center justify-center p-4"
           >
             <motion.div 
               initial={{ scale: 0.95, y: 10 }}
@@ -1845,6 +2220,25 @@ export default function GameBoard() {
                     )}
                 </AnimatePresence>
 
+                {/*羁绊文字反馈 (全局居中且绝对位于最上层)*/}
+                <AnimatePresence>
+                    {feedbackTexts.length > 0 && (
+                        <div className="absolute -top-16 sm:-top-24 left-1/2 -translate-x-1/2 flex flex-col gap-1.5 z-[200] pointer-events-none items-center w-max">
+                            {feedbackTexts.map(fb => (
+                                <motion.div
+                                    key={fb.id}
+                                    initial={{ opacity: 0, y: 10, scale: 0.8 }}
+                                    animate={{ opacity: 1, y: 0, scale: 1.1 }}
+                                    exit={{ opacity: 0, y: -10 }}
+                                    className={`text-sm sm:text-xl font-black ${fb.color} drop-shadow-[0_0_15px_currentColor] bg-black/90 px-5 py-1.5 rounded-full border border-white/20`}
+                                >
+                                    {fb.text}
+                                </motion.div>
+                            ))}
+                        </div>
+                    )}
+                </AnimatePresence>
+
                 {[0, 1, 2, 3, 4].map((slotIndex) => {
                     const card = currentBufferCards[slotIndex];
                     const isActive = activeCardIndex === slotIndex;
@@ -1890,25 +2284,7 @@ export default function GameBoard() {
                                             )}
                                         </AnimatePresence>
 
-                                        {/*羁绊文字反馈 (仅展示在中心区域)*/}
-                    {slotIndex === 2 && feedbackTexts.length > 0 && (
-                        <div className="absolute top-1/2 -translate-y-1/2 -right-32 flex flex-col gap-1 z-[100] pointer-events-none">
-                            <AnimatePresence>
-                                {feedbackTexts.map(fb => (
-                                    <motion.div
-                                        key={fb.id}
-                                        initial={{ opacity: 0, x: -20, scale: 0.8 }}
-                                        animate={{ opacity: 1, x: 0, scale: 1 }}
-                                        exit={{ opacity: 0, y: -20 }}
-                                        className={`text-sm sm:text-base font-black ${fb.color} drop-shadow-[0_0_8px_currentColor] bg-black/60 px-3 py-1 rounded-full border border-white/10`}
-                                    >
-                                        {fb.text}
-                                    </motion.div>
-                                ))}
-                            </AnimatePresence>
-                        </div>
-                    )}
-                                    </motion.div>
+                                        </motion.div>
                                 )}
                             </AnimatePresence>
                             {!card && (
@@ -2002,7 +2378,7 @@ export default function GameBoard() {
         </div>
 
         {/* TFT Tactical Board Area */}
-        <section className="shrink-0 px-4 py-1.5 bg-slate-900/80 border-t border-white/10 backdrop-blur-2xl relative overflow-visible z-40">
+        <section className={`shrink-0 px-4 py-1.5 bg-slate-900/80 border-t border-white/10 backdrop-blur-2xl relative overflow-visible ${isCalculating || tftFeedbacks.length > 0 ? 'z-[150]' : 'z-40'}`}>
             {/* Background Grid Effect */}
             <div className="absolute inset-0 opacity-5 pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle at 1px 1px, white 1px, transparent 0)', backgroundSize: '16px 16px' }} />
             
@@ -2096,9 +2472,9 @@ export default function GameBoard() {
                                                     <motion.div
                                                         key={fb.id}
                                                         initial={{ opacity: 0, y: 0, scale: 0.5 }}
-                                                        animate={{ opacity: 1, y: -25, scale: 1.2 }}
-                                                        exit={{ opacity: 0, y: -45 }}
-                                                        className={`absolute top-0 left-1/2 -translate-x-1/2 whitespace-nowrap text-[12px] font-black ${fb.color} drop-shadow-[0_0_8px_currentColor] z-[100] pointer-events-none`}
+                                                        animate={{ opacity: 1, y: -35, scale: 1.3 }}
+                                                        exit={{ opacity: 0, y: -55 }}
+                                                        className={`absolute top-0 left-1/2 -translate-x-1/2 whitespace-nowrap text-[14px] font-black ${fb.color} drop-shadow-[0_0_12px_currentColor] z-[200] pointer-events-none`}
                                                     >
                                                         {fb.text}
                                                     </motion.div>
@@ -2194,11 +2570,11 @@ export default function GameBoard() {
                         <div className="grid grid-cols-4 gap-2 mb-1">
                             <button
                                 onClick={playHand}
-                                disabled={!selectedHand || player.hands <= 0 || isCalculating}
+                                disabled={!selectedHand || (player.hands <= 0 && !(activeSynergies.find(s => s.id === 'cheater')?.activeLevel >= 1)) || isCalculating}
                                 className={`
                                     col-span-2 py-1.5 rounded-lg font-bold uppercase tracking-widest text-[10px] transition-all
                                     flex items-center justify-center gap-2 shadow-lg
-                                    ${selectedHand && player.hands > 0 && !isCalculating
+                                    ${selectedHand && (player.hands > 0 || (activeSynergies.find(s => s.id === 'cheater')?.activeLevel >= 1)) && !isCalculating
                                         ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-500/20' 
                                         : 'bg-slate-800 text-slate-600 cursor-not-allowed border border-white/5'}
                                 `}
@@ -2368,9 +2744,9 @@ export default function GameBoard() {
 
                     {/* Controls Grid */}
                     <div className="grid grid-cols-2 gap-1.5 sm:gap-2 shrink-0">
-                        <button onClick={buyExp} disabled={player.gold < 4} className="bg-blue-600/20 hover:bg-blue-600/40 border border-blue-500/30 rounded-lg sm:rounded-xl flex flex-col items-center justify-center py-1.5 sm:py-2.5 transition-colors disabled:opacity-50 group shadow-lg">
-                            <span className="text-[10px] sm:text-xs font-black text-blue-400">{player.level===9?'系统超频':'购买经验'}</span>
-                            <span className="text-[9px] sm:text-[10px] text-amber-400 font-mono mt-0.5">${player.level===9?20:4}</span>
+                        <button onClick={buyExp} disabled={player.gold < (player.level===6?20:4) && !(activeSynergies.find(s => s.id === 'cheater')?.activeLevel >= 2 && player.currentHp > ((player.level===6?20:4) - player.gold) * 2)} className="bg-blue-600/20 hover:bg-blue-600/40 border border-blue-500/30 rounded-lg sm:rounded-xl flex flex-col items-center justify-center py-1.5 sm:py-2.5 transition-colors disabled:opacity-50 group shadow-lg">
+                            <span className="text-[10px] sm:text-xs font-black text-blue-400">{player.level===6?'系统超频':'购买经验'}</span>
+                            <span className="text-[9px] sm:text-[10px] text-amber-400 font-mono mt-0.5">${player.level===6?20:4}</span>
                         </button>
                         <button onClick={() => setIsSelling(!isSelling)} className={`rounded-lg sm:rounded-xl flex flex-col items-center justify-center py-1.5 sm:py-2.5 transition-colors border shadow-lg ${isSelling ? 'bg-rose-600 border-rose-500 text-white shadow-[0_0_15px_rgba(225,29,72,0.6)]' : 'bg-rose-900/20 border-rose-500/30 text-rose-400 hover:bg-rose-900/40'}`}>
                             <span className="text-[10px] sm:text-xs font-black">{isSelling ? '取消出售' : '出售卡牌'}</span>
@@ -2378,7 +2754,7 @@ export default function GameBoard() {
                         </button>
                     </div>
 
-                    <button onClick={refreshShop} disabled={player.gold < shopRefreshCost} className="w-full bg-slate-800 hover:bg-slate-700 border border-white/10 rounded-lg sm:rounded-xl flex justify-between items-center px-2.5 sm:px-4 py-2 sm:py-3 transition-colors disabled:opacity-50 shrink-0 shadow-lg mt-0.5">
+                    <button onClick={refreshShop} disabled={player.gold < shopRefreshCost && !(activeSynergies.find(s => s.id === 'cheater')?.activeLevel >= 2 && player.currentHp > (shopRefreshCost - player.gold) * 2)} className="w-full bg-slate-800 hover:bg-slate-700 border border-white/10 rounded-lg sm:rounded-xl flex justify-between items-center px-2.5 sm:px-4 py-2 sm:py-3 transition-colors disabled:opacity-50 shrink-0 shadow-lg mt-0.5">
                         <span className="text-[10px] sm:text-sm font-bold text-slate-300 flex items-center gap-1.5 sm:gap-2"><RefreshCw size={12} className="text-blue-400 sm:w-[14px] sm:h-[14px]"/> 刷新</span>
                         <span className="text-[10px] sm:text-sm text-amber-400 font-mono">${shopRefreshCost}</span>
                     </button>
@@ -2419,7 +2795,7 @@ export default function GameBoard() {
                                 {/* Buy Button */}
                                 <button 
                                     onClick={() => buyTFTCard(card, i)}
-                                    disabled={player.gold < card.cost || player.benchTFTCards.length >= 6}
+                                    disabled={(player.gold < card.cost && !(activeSynergies.find(s => s.id === 'cheater')?.activeLevel >= 2 && player.currentHp > (card.cost - player.gold) * 2)) || player.benchTFTCards.length >= 6}
                                     className="w-full sm:w-28 shrink-0 py-1.5 sm:py-3 bg-slate-800 hover:bg-blue-600 disabled:opacity-50 text-[10px] sm:text-xs font-black text-white rounded-lg sm:rounded-xl border border-white/5 flex flex-row sm:flex-col justify-center items-center gap-1 transition-colors shadow-md"
                                 >
                                     <span>购买</span>

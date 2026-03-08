@@ -1,71 +1,69 @@
 import { TFTCard } from '@/types/game';
 
-// Helper to create cards
+// 辅助函数：快速生成卡牌数据
 const createCard = (
-  id: string,
+  templateId: string,
   name: string,
   cost: number,
   synergies: string[],
-  desc: string,
-  stats: Partial<TFTCard['stats']> = {}
+  desc: string
 ): Omit<TFTCard, 'id' | 'stars'> => ({
-  templateId: id,
+  templateId,
   name,
   cost,
   synergies,
   description: desc,
-  rarity: cost === 1 ? 'common' : cost === 2 ? 'rare' : cost === 3 ? 'legendary' : cost === 4 ? 'mythic' : 'mythic', // Mapping cost to rarity loosely
-  stats
+  rarity: cost === 1 ? 'common' : cost === 2 ? 'rare' : cost === 3 ? 'epic' : cost === 4 ? 'legendary' : 'mythic',
+  stats: { chips: 0, mult: 0, percentMult: 0 }
 });
 
+// 核心卡池：38张全新流派卡牌
 export const CARD_DATABASE: Omit<TFTCard, 'id' | 'stars'>[] = [
-  // --- 1 Cost ---
-  createCard('c1-blade-assassin', '暗巷快刀', 1, ['spades', 'assassin'], '只打出单张 ♠ 时，基础伤害增加 15/35/100。'),
-  createCard('c1-fortress-calc', '铁壁算盘', 1, ['hearts', 'calculator'], '打出红桃对子时，额外获得 20/40/120 点护甲。'),
-  createCard('c1-venom-magician', '剧毒吹箭', 1, ['clubs', 'magician'], '每次使用“换牌”，对怪物施加 2/4/12 层中毒。'),
-  createCard('c1-tycoon-calc', '贪婪矿工', 1, ['diamonds', 'calculator'], '打出方块对子时，必定额外掉落 1/2/6 金币。'),
-  createCard('c1-blade-surfer', '深海潜行者', 1, ['spades', 'surfer'], '打出黑桃同花时，为你恢复 5/10/30 点生命值。'),
-  createCard('c1-fortress-geek', '逻辑门卫', 1, ['hearts', 'geek'], '打出顺子时，清除你手牌中 1/2/5 个负面状态。'),
-  createCard('c1-venom-geek', '生化黑客', 1, ['clubs', 'geek'], '打出顺子时，如果怪物中毒，毒发伤害结算 1/2/5 次。'),
-  createCard('c1-tycoon-cheater', '发牌童子', 1, ['diamonds', 'cheater'], '回合结束时，每有1次未使用出牌次数，转化为 1/2/5 金币。'),
+  // --- 1 Cost (8张) ---
+  createCard('c1-01', '暗巷快刀', 1, ['spades', 'assassin'], '【星级: +3/+8/+25 筹码】\n单张牌击杀怪物时，永久增加基础筹码。'),
+  createCard('c1-02', '发牌童子', 1, ['diamonds', 'magician'], '【星级: +1/+2/+5金, +2/+5/+15血】\n胜利时若本回合未弃牌得金币，若受伤回血。'),
+  createCard('c1-03', '铁壁算盘', 1, ['hearts', 'calculator'], '【星级: 提升 2%/5%/15%】\n牌库中每有一张红桃，提升你的护甲获取率。'),
+  createCard('c1-04', '见习黑客', 1, ['clubs', 'geek'], '【星级: 植入 2/5/15 层】\n每次打出顺子，强制给怪物植入木马病毒。'),
+  createCard('c1-05', '拾荒猎犬', 1, ['diamonds', 'cheater'], '【星级: +2/+5/+15 筹码】\n每次商店刷新扣1血，并永久增加基础筹码。'),
+  createCard('c1-06', '盾卫新兵', 1, ['hearts', 'assassin'], '【星级: +15/+35/+100 护甲】\n如果只打出1张牌，额外获得大量护甲。'),
+  createCard('c1-07', '毒液试管', 1, ['clubs', 'surfer'], '【星级: 每张梅花回 1/2/6 血】\n打出同花时，牌型中每包含一张梅花为你回血。'),
+  createCard('c1-08', '算力学徒', 1, ['spades', 'calculator'], '【星级: 倍率临时 +1/+2/+6】\n打出对子时，本回合全局倍率临时提升。'),
 
-  // --- 2 Cost ---
-  createCard('c2-blade-calc', '处刑双刃', 2, ['spades', 'calculator'], '打出黑桃对子时，若怪物血量低于 10%/20%/50%，直接斩杀。'),
-  createCard('c2-fortress-surfer', '赤血海妖', 2, ['hearts', 'surfer'], '打出红桃同花时，生命上限永久提升 2/5/15 点。'),
-  createCard('c2-venom-cheater', '走私毒枭', 2, ['clubs', 'cheater'], '回合结束时，怪物每有 10 层毒，获得 1/2/6 金币。'),
-  createCard('c2-tycoon-assassin', '赏金猎头', 2, ['diamonds', 'assassin'], '只打出单张方块并击杀怪物时，掉落 5/12/30 金币宝箱。'),
-  createCard('c2-blade-magician', '幻影飞刀', 2, ['spades', 'magician'], '每次换牌后，下一次出牌总倍率临时增加 1/3/8。'),
-  createCard('c2-fortress-assassin', '孤高骑士', 2, ['hearts', 'assassin'], '如果本回合只出了 1 次牌就结束，获得 50/120/400 护甲。'),
-  createCard('c2-venom-calc', '连环炸弹客', 2, ['clubs', 'calculator'], '打出“三条”或“四条”时，将怪物中毒层数复制 1/2/4 份。'),
-  createCard('c2-tycoon-geek', '黄金罗盘', 2, ['diamonds', 'geek'], '打出包含方块的顺子时，下回合商店刷新必定出现 1/2/5 张财阀卡。'),
+  // --- 2 Cost (8张) ---
+  createCard('c2-01', '狂血海妖', 2, ['hearts', 'surfer'], '【星级: 转化 5/10/25 血】\n每战限1次：打红桃同花扣除当前血量转化为最大生命。'),
+  createCard('c2-02', '连环炸弹客', 2, ['clubs', 'calculator'], '【星级: 增加 20%/50%/翻倍】\n算分后总筹码为奇数的牌型，使怪物木马层数暴增。'),
+  createCard('c2-03', '孤高骑士', 2, ['hearts', 'assassin'], '【星级: 转化 10%/25%/70%】\n打出无对子的牌型时，伤害按比例转化为护甲。'),
+  createCard('c2-04', '数据矿工', 2, ['spades', 'diamonds'], '【星级: +2/+5/+15 筹码】\n你每拥有5金币，打出的黑桃额外提供基础筹码。'),
+  createCard('c2-05', '幻影魔术师', 2, ['clubs', 'magician'], '【星级: 每张施加 3/8/25 层】\n弃牌时，弃掉的梅花牌转化为木马病毒施加给怪物。'),
+  createCard('c2-06', '超频狂人', 2, ['spades', 'cheater'], '【星级: 扣 20%/15%/5% 最大生命】\n出牌次数耗尽时，可扣除最大生命值强行出牌。'),
+  createCard('c2-07', '逻辑守卫', 2, ['hearts', 'geek'], '【星级: +20/+50/+150 护甲】\n每次打出顺子，下回合自动获得护甲。'),
+  createCard('c2-08', '赏金猎手', 2, ['diamonds', 'assassin'], '【星级: 20%/50%/100% 概率】\n用单张牌击杀怪物时，概率掉落5金币宝箱。'),
 
-  // --- 3 Cost ---
-  createCard('c3-blade-geek', '皇家剑舞者', 3, ['spades', 'geek'], '打出黑桃顺子时，本局常驻基础伤害永久 +5/+12/+40。'),
-  createCard('c3-fortress-calc', '动能装甲', 3, ['hearts', 'calculator'], '当前护甲值的 5%/10%/30% 转化为出牌基础伤害。'),
-  createCard('c3-venom-surfer', '瘟疫暴君', 3, ['clubs', 'surfer'], '打出梅花同花时，怪物损失当前生命 5%/10%/25% 的真实伤害。'),
-  createCard('c3-tycoon-calc', '算力印钞机', 3, ['diamonds', 'calculator'], '每持有 1 金币，所有倍率提升 0.1/0.2/0.6。'),
-  createCard('c3-blade-cheater', '暗网清道夫', 3, ['spades', 'cheater'], '每在商店刷新一次，下回合首发伤害增加 20/50/150。'),
-  createCard('c3-fortress-magician', '灵魂熔炉', 3, ['hearts', 'magician'], '回合结束未打破的护甲，有 20%/50%/100% 概率保留。'),
-  createCard('c3-venom-assassin', '见血封喉', 3, ['clubs', 'assassin'], '单出 1 张梅花时，强行挂上 15/35/100 层毒。'),
-  createCard('c3-tycoon-magician', '洗钱专家', 3, ['diamonds', 'magician'], '弃掉方块时，每张方块抵消本回合受到的 10/25/80 点伤害。'),
+  // --- 3 Cost (8张) ---
+  createCard('c3-01', '狂战士协议', 3, ['spades', 'cheater'], '【星级: +10筹1倍/+25筹2倍/+80筹6倍】\n每损失10%血，打出的牌额外加筹码加倍率。'),
+  createCard('c3-02', '虚空银行家', 3, ['diamonds', 'magician'], '【星级: 15%/40%/100% 概率】\n弃牌概率永久从牌库删除，每删一张赚3块。'),
+  createCard('c3-03', '皇家剑舞者', 3, ['spades', 'geek'], '【星级: 20%/50%/100% 概率】\n打出黑桃顺子，概率复制一张黑桃永久加入牌库。'),
+  createCard('c3-04', '灵魂熔炉', 3, ['hearts', 'magician'], '【星级: +1/+3/+10 倍率】\n每次受到真实扣血伤害，永久增加全局倍率。'),
+  createCard('c3-05', '生化传播者', 3, ['clubs', 'surfer'], '【星级: 10%/25%/80% 比例】\n打出同花时，按怪物身上的木马层数比例回血。'),
+  createCard('c3-06', '量化分析师', 3, ['diamonds', 'calculator'], '【星级: 1利息 = +1/+2/+5 倍率】\n结算利息不仅给金币，还永久增加全局倍率。'),
+  createCard('c3-07', '处刑之刃', 3, ['spades', 'assassin'], '【星级: 点数 x2/x4/x10】\n只打出单张黑桃时，伤害无视护甲，基础点数乘算。'),
+  createCard('c3-08', '算力印钞机', 3, ['diamonds', 'hearts'], '【星级: 1金抵 2/5/15 伤】\n你的金币可当做护甲。护甲归零时自动扣钱抵伤。'),
 
-  // --- 4 Cost ---
-  createCard('c4-blade-surfer', '深海斩杀者', 4, ['spades', 'surfer'], '黑桃同花触发张数 -1/-1/-2，伤害 x1.5/2.5/6。'),
-  createCard('c4-fortress-mix', '时空重塑者', 4, ['hearts', 'geek', 'magician'], '打出红桃顺子时，若受致命伤，免疫并恢复 30%/60%/100%。'),
-  createCard('c4-venom-mix', '化学狂人', 4, ['clubs', 'calculator', 'assassin'], '打出梅花对子时，引爆毒层数造成 x2/x4/x10 真实伤害。'),
-  createCard('c4-tycoon-magician', '虚空银行家', 4, ['diamonds', 'magician'], '换牌时，随机将场上 1/2/5 张普通牌永久转化为方块。'),
-  createCard('c4-blade-assassin', '处决机器', 4, ['spades', 'assassin'], '单张黑桃伤害溅射 1/2/6 次。'),
-  createCard('c4-fortress-cheater', '贪腐军阀', 4, ['hearts', 'cheater'], '受伤且护甲为0时，扣 5/4/1 金币抵消 100 伤害。'),
-  createCard('c4-venom-surfer', '蔓延毒网', 4, ['clubs', 'surfer'], '梅花同花使怪物意图伤害永久降低 10%/25%/60%。'),
-  createCard('c4-tycoon-calc', '资本大鳄', 4, ['diamonds', 'calculator'], '存款>50时，所有卡牌视为万能牌，全属性 +20%/50%/150%。'),
+  // --- 4 Cost (8张) ---
+  createCard('c4-01', '时间重塑者', 4, ['hearts', 'geek', 'magician'], '【星级: 回溯至 30%/60%/100%】\n打出顺子清空负面状态，并回溯血量至最大值比例。'),
+  createCard('c4-02', '处决机器', 4, ['spades', 'assassin'], '【星级: 总伤害 x1.5/x3/x8】\n单出 A 或 K 时，最终总伤害疯狂乘算拔高。'),
+  createCard('c4-03', '资本巨鳄', 4, ['diamonds', 'calculator'], '【星级: 点数额外 +5/+15/+50】\n存款超50时，手牌全视为万能牌，且附加点数。'),
+  createCard('c4-04', '木马母体', 4, ['clubs', 'cheater'], '【星级: 1倍/3倍/10倍 真伤】\n怪物攻击前受木马真实伤害，毒死则直接取消该次攻击。'),
+  createCard('c4-05', '深网黑客', 4, ['clubs', 'surfer'], '【星级: 10%/30%/100% 转化率】\n同花不耗次数，且造成的伤害比例转化为木马病毒。'),
+  createCard('c4-06', '绝对零度', 4, ['hearts', 'calculator'], '【星级: 转化 5%/15%/50%】\n打出四条（炸弹）时，将当前护甲比例永久转为最大生命。'),
+  createCard('c4-07', '血色盛宴', 4, ['spades', 'cheater'], '【星级: 1%/5%/20% 转化率】\n击杀怪物的溢出伤害(Overkill)，按比例转化为治疗量回血。'),
+  createCard('c4-08', '幻象核心', 4, ['spades', 'magician'], '【星级: 点数 +3/+8/+25】\n每次你弃掉黑桃，该牌永久增加基础点数(越弃越强)。'),
 
-  // --- 5 Cost ---
-  createCard('c5-blade-god', '终焉代码·灭世', 5, ['spades', 'hearts', 'clubs', 'diamonds', 'spades'], '包含黑桃的牌型扣除怪物最大生命 5%/15%/100%。'), // Multi-suit hack
-  createCard('c5-fortress-god', '绝对屏障·神域', 5, ['spades', 'hearts', 'clubs', 'diamonds', 'hearts'], '回合开始生成 1/3/10 倍最大生命护盾，免疫UI污染。'),
-  createCard('c5-venom-god', '万物归墟·凋零', 5, ['spades', 'hearts', 'clubs', 'diamonds', 'clubs'], '怪物回合开始时，毒层数 x1.5/x2.5/x10。'),
-  createCard('c5-tycoon-god', '降维打击·清算', 5, ['spades', 'hearts', 'clubs', 'diamonds', 'diamonds'], '花费 100/50/1 金币直接胜利。'),
-  createCard('c5-calc-god', '欧米伽终端', 5, ['calculator', 'surfer', 'geek', 'magician', 'assassin', 'cheater', 'calculator'], '解锁五条/八条。倍率指数飙升。'),
-  createCard('c5-geek-god', '莫比乌斯环', 5, ['calculator', 'surfer', 'geek', 'magician', 'assassin', 'cheater', 'geek'], '顺子无限循环，不耗次数，倍率递增。'),
-  createCard('c5-magician-god', '混沌魔方', 5, ['calculator', 'surfer', 'geek', 'magician', 'assassin', 'cheater', 'magician'], '换牌变为施法，弃牌变飞剑。'),
-  createCard('c5-cheater-god', '造物主之手', 5, ['calculator', 'surfer', 'geek', 'magician', 'assassin', 'cheater', 'cheater'], '商店全免费/倒给钱。'),
+  // --- 5 Cost (6张) ---
+  createCard('c5-01', '欧米伽终端', 5, ['calculator'], '【星级: 伤害额外 x2/x5/x20】\n强制锁定按[同花顺]算分，且最终伤害额外乘算。'),
+  createCard('c5-02', '降维打击·清算', 5, ['diamonds'], '【星级: 20块/10块/2块 买1点倍率】\n商店点击空白处直接花钱买全局倍率。'),
+  createCard('c5-03', '万物归墟·凋零', 5, ['clubs'], '【星级: 20%/50%/100% 暴击】\n怪物锁死防御意图，且你的毒伤大概率暴击(伤害x3)。'),
+  createCard('c5-04', '神创堡垒·埃癸斯', 5, ['hearts'], '【星级: 10%/30%/100% 转化率】\n护甲绝对不重置。出牌时护甲比例转化为倍率。'),
+  createCard('c5-05', '真理之剑·达摩克利斯', 5, ['spades'], '【星级: 黑桃筹码 x2/x5/x20】\n伤害全转真伤。牌库所有黑桃筹码永久乘算！'),
+  createCard('c5-06', '源代码·悖论', 5, ['cheater'], '【星级: 死线 -50/-150/-999血】\n不死图腾！0血以下不死，出牌不耗次数改为按比例扣血。')
 ];

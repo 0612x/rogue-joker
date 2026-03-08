@@ -19,47 +19,47 @@ export const SHOP_PROBABILITIES: Record<number, Record<number, number>> = {
   6: { 1: 5, 2: 15, 3: 30, 4: 35, 5: 15 }
 };
 
-// --- Synergies (Refactored for Max 6 Units) ---
+// --- Synergies (Refactored to 8 Core Resources System) ---
 export const SYNERGIES: Synergy[] = [
   // Suits
   {
     id: 'spades',
-    name: '锋刃 (Blade)',
+    name: '锋刃 (Core)',
     type: 'suit',
     thresholds: [2, 4, 6],
     currentCount: 0,
     activeLevel: 0,
-    description: '(2)基础伤害+30; (4)基础伤害+80; (6)基础伤害翻3倍。',
+    description: '(2)每张黑桃+15筹码; (4)每张黑桃额外+40筹码，且每损失10%血量筹码翻倍; (6)重装核芯: 当前护甲1:1转化为基础筹码。',
     icon: '⚔️'
   },
   {
     id: 'hearts',
-    name: '堡垒 (Fortress)',
+    name: '堡垒 (Firewall)',
     type: 'suit',
     thresholds: [2, 4, 6],
     currentCount: 0,
     activeLevel: 0,
-    description: '(2)出牌+20护甲; (4)出牌+50护甲; (6)回合结束反弹100%护甲值的真实伤害。',
+    description: '(2)回合结束保留30%护甲; (4)保留70%护甲，受真实伤害扣血时每扣1血+1最大生命值; (6)保留100%护甲，受击时消耗等额护甲反弹真实伤害。',
     icon: '🛡️'
   },
   {
     id: 'clubs',
-    name: '猛毒 (Venom)',
+    name: '猛毒 (Trojan)',
     type: 'suit',
     thresholds: [2, 4, 6],
     currentCount: 0,
     activeLevel: 0,
-    description: '(2)施加2层毒; (4)施加6层毒; (6)每回合敌方毒伤直接翻倍。',
+    description: '(2)每打1张梅花植入1层木马(减1意图伤害); (4)木马回合结束不减半，怪物每5层木马全局倍率+1; (6)怪物攻击时引爆木马，造成(层数x最大血量)真伤。',
     icon: '🧪'
   },
   {
     id: 'diamonds',
-    name: '财阀 (Tycoon)',
+    name: '财阀 (Syndicate)',
     type: 'suit',
     thresholds: [2, 4, 6],
     currentCount: 0,
     activeLevel: 0,
-    description: '(2)胜利额外掉落2金币; (4)胜利掉落5金币; (6)商店刷新只需1金币，并无视利息上限。',
+    description: '(2)胜利额外掉落3金币; (4)利息上限10，商店刷新1金币; (6)1金币可抵挡3点伤害，且每10金币全局倍率+1。',
     icon: '💎'
   },
   // Classes
@@ -67,20 +67,20 @@ export const SYNERGIES: Synergy[] = [
     id: 'calculator',
     name: '算力者 (Calculator)',
     type: 'class',
-    thresholds: [2, 4, 6],
+    thresholds: [2, 4],
     currentCount: 0,
     activeLevel: 0,
-    description: '(2)含对子总倍率+2; (4)含对子总倍率+6; (6)含对子总倍率+15。',
+    description: '(2)含对子的牌型倍率+5; (4)双线程并发: 所有含对子的牌型算分结算两次。',
     icon: '🧮'
   },
   {
     id: 'surfer',
-    name: '浪客 (Surfer)',
+    name: '黑客 (Hacker)',
     type: 'class',
     thresholds: [2, 4],
     currentCount: 0,
     activeLevel: 0,
-    description: '(2)同花只需4张牌; (4)同花只需3张牌，且同花倍率 x3。',
+    description: '(2)同花只需4张; (4)权限绕过: 同花只需3张，且打出同花时不消耗出牌次数。',
     icon: '🌊'
   },
   {
@@ -90,17 +90,17 @@ export const SYNERGIES: Synergy[] = [
     thresholds: [2, 4],
     currentCount: 0,
     activeLevel: 0,
-    description: '(2)顺子可首尾相连; (4)打出顺子时不消耗出牌次数。',
+    description: '(2)顺子可首尾相连; (4)内存溢出: 每次打出顺子，恢复1次出牌次数和2次弃牌次数。',
     icon: '🃏'
   },
   {
     id: 'magician',
-    name: '魔术师 (Magician)',
+    name: '欺诈师 (Illusionist)',
     type: 'class',
     thresholds: [2, 4],
     currentCount: 0,
     activeLevel: 0,
-    description: '(2)每回合额外获得2次弃牌机会; (4)每次弃牌，直接对怪物造成真实伤害。',
+    description: '(2)每回合额外获得2次弃牌; (4)数据劫持: 每次弃牌进入缓存，下次出牌时缓存点数加到基础筹码中并清空。',
     icon: '🎩'
   },
   {
@@ -110,17 +110,17 @@ export const SYNERGIES: Synergy[] = [
     thresholds: [2, 4],
     currentCount: 0,
     activeLevel: 0,
-    description: '(2)只出单张时伤害x3; (4)只出单张时伤害x9。',
+    description: '(2)只出单张时，底分按“四条(炸弹)”计算; (4)拔线处决: 怪物血量低于你最大生命值两倍时，单卡直接秒杀。',
     icon: '🔪'
   },
   {
     id: 'cheater',
-    name: '老千 (Cheater)',
+    name: '破壁人 (Breaker)',
     type: 'class',
     thresholds: [2, 4],
     currentCount: 0,
     activeLevel: 0,
-    description: '(2)商店刷新只需1金币; (4)商店第1格必定刷出现有同名卡。',
+    description: '(2)出牌次数为0时可透支生命出牌(扣15%当前血); (4)鲜血献祭: 商店可用生命值购买刷新和卡牌(1金币=2血)。',
     icon: '🎲'
   }
 ];
