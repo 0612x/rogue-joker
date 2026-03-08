@@ -62,9 +62,9 @@ const INITIAL_PLAYER: PlayerState = {
   currentHp: 100,
   block: 0,
   gold: 0,
-  level: 3,
+  level: 1,
   currentExp: 0,
-  maxExp: LEVEL_EXP_CURVE[3],
+  maxExp: 2,
   overclockCount: 0,
   hands: 3,
   discards: 3,
@@ -133,10 +133,10 @@ export default function GameBoard() {
         allowWrapAroundStraight: false
     };
     
-    // Add TFT Card stats
+    // Add TFT Card stats (Safeguard added)
     player.activeTFTCards.forEach(card => {
-        if (card.stats.chips) options.tftChipsBonus! += card.stats.chips;
-        if (card.stats.mult) options.tftMultBonus! += card.stats.mult;
+        if (card.stats?.chips) options.tftChipsBonus! += card.stats.chips;
+        if (card.stats?.mult) options.tftMultBonus! += card.stats.mult;
     });
 
     // Synergies
@@ -319,16 +319,15 @@ export default function GameBoard() {
 
   const startNextBattle = () => {
     // Calculate Rewards
-    let rewardGold = 5; // Base reward
+    let rewardGold = 2; // Fixed: Base reward reduced from 5 to 2
     
     // 1. Interest
     const interest = Math.min(5, Math.floor(player.gold / 10));
     rewardGold += interest;
     
     // 2. Quick Kill Bonus
-    if (player.handsUsedThisBattle === 1) rewardGold += 3;
-    else if (player.handsUsedThisBattle === 2) rewardGold += 2;
-    else if (player.handsUsedThisBattle === 3) rewardGold += 1;
+    if (player.handsUsedThisBattle === 1) rewardGold += 2;
+    else if (player.handsUsedThisBattle === 2) rewardGold += 1;
 
     // 3. EXP Gain
     let newExp = player.currentExp + 2;
@@ -346,8 +345,7 @@ export default function GameBoard() {
 
     const tycoon = currentSynergies.find(s => s.id === 'tycoon');
     if (tycoon && tycoon.activeLevel >= 3) {
-        // Tycoon (7): Free Refresh (+2 Gold) + Consumable (+5 Gold value)
-        rewardGold += 7;
+        rewardGold += 3; // Fixed: Reduced Tycoon bonus
     }
 
     // Level Up Logic
@@ -356,7 +354,6 @@ export default function GameBoard() {
         newLevel++;
         newMaxExp = LEVEL_EXP_CURVE[newLevel];
     }
-    // Cap at Lv 9
     if (newLevel === 9) {
         newExp = 0;
         newMaxExp = 9999;
@@ -364,7 +361,7 @@ export default function GameBoard() {
 
     setPlayer(prev => ({
         ...prev,
-        currentHp: Math.min(prev.maxHp, prev.currentHp + 20), // Heal 20
+        currentHp: Math.min(prev.maxHp, prev.currentHp + 20),
         gold: prev.gold + rewardGold,
         level: newLevel,
         currentExp: newExp,
@@ -379,19 +376,6 @@ export default function GameBoard() {
         deck: shuffleDeck([...prev.deck, ...prev.hand, ...prev.discardPile]),
     }));
 
-    // Generate Shop (uses new level)
-    // We need to wait for state update or pass level directly. 
-    // Since generateShop reads from player.level, we should pass it or use useEffect.
-    // But generateShop is called immediately. Let's modify generateShop to accept level optional?
-    // Or just rely on the fact that we setPlayer, but React state updates are async.
-    // Better to update generateShop to read from an argument if provided, or just defer.
-    // For now, let's just use a timeout or assume the player state update will be handled in next render?
-    // No, generateShop uses `player.level`.
-    // Let's manually trigger generateShop with the NEW level.
-    
-    // Actually, generateShop reads `player.level`. We can't easily pass it without refactoring.
-    // Let's just set the shop cards directly here using the new level logic.
-    
     const probs = SHOP_PROBABILITIES[newLevel] || SHOP_PROBABILITIES[9];
     const newShopCards: TFTCard[] = [];
     for (let i = 0; i < 4; i++) {
@@ -404,7 +388,12 @@ export default function GameBoard() {
         }
         const pool = CARD_DATABASE.filter(c => c.cost === rarity);
         const template = pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : CARD_DATABASE[0];
-        newShopCards.push({ ...template, id: Math.random().toString(36).substr(2, 9), stars: 1 } as TFTCard);
+        newShopCards.push({ 
+            ...template, 
+            id: Math.random().toString(36).substr(2, 9), 
+            stars: 1,
+            stats: { ...template.baseStats } // Fixed: Initialize stats correctly
+        } as TFTCard);
     }
     setShopCards(newShopCards);
     setShowShop(true);
@@ -414,53 +403,52 @@ export default function GameBoard() {
     const newShopCards: TFTCard[] = [];
     const probs = SHOP_PROBABILITIES[player.level] || SHOP_PROBABILITIES[9];
 
-    // Cheater (4): Guarantee own card
     const currentSynergies = calculateActiveSynergies(player.activeTFTCards);
     const cheater = currentSynergies.find(s => s.id === 'cheater');
     const forceOwnCard = cheater && cheater.activeLevel >= 2;
 
     for (let i = 0; i < 4; i++) {
-        // Force Own Card logic for first slot
         if (i === 0 && forceOwnCard) {
              const ownCards = [...player.activeTFTCards, ...player.benchTFTCards];
              if (ownCards.length > 0) {
                  const randomOwn = ownCards[Math.floor(Math.random() * ownCards.length)];
                  const template = CARD_DATABASE.find(c => c.templateId === randomOwn.templateId);
                  if (template) {
-                     newShopCards.push({ ...template, id: Math.random().toString(36).substr(2, 9), stars: 1 } as TFTCard);
+                     newShopCards.push({ 
+                         ...template, 
+                         id: Math.random().toString(36).substr(2, 9), 
+                         stars: 1,
+                         stats: { ...template.baseStats }
+                     } as TFTCard);
                      continue;
                  }
              }
         }
 
-        // Roll for rarity
         const roll = Math.random() * 100;
         let rarity = 1;
         let cumulative = 0;
         
         for (let r = 1; r <= 5; r++) {
             cumulative += probs[r] || 0;
-            if (roll <= cumulative) {
-                rarity = r;
-                break;
-            }
+            if (roll <= cumulative) { rarity = r; break; }
         }
 
-        // Filter cards by rarity (cost)
         const pool = CARD_DATABASE.filter(c => c.cost === rarity);
         if (pool.length === 0) {
-            // Fallback if pool empty (shouldn't happen)
             newShopCards.push({
                 ...CARD_DATABASE[0],
                 id: Math.random().toString(36).substr(2, 9),
-                stars: 1
+                stars: 1,
+                stats: { ...CARD_DATABASE[0].baseStats }
             } as TFTCard);
         } else {
             const template = pool[Math.floor(Math.random() * pool.length)];
             newShopCards.push({
                 ...template,
                 id: Math.random().toString(36).substr(2, 9),
-                stars: 1
+                stars: 1,
+                stats: { ...template.baseStats }
             } as TFTCard);
         }
     }
@@ -472,23 +460,15 @@ export default function GameBoard() {
     if (player.level === 9 && player.gold < 20) return;
 
     if (player.level === 9) {
-        // System Overclock
         setPlayer(prev => {
-            // Buff a random card
             if (prev.activeTFTCards.length === 0) return { ...prev, gold: prev.gold - 20 };
-            
             const newActive = [...prev.activeTFTCards];
             const randomIndex = Math.floor(Math.random() * newActive.length);
             const card = newActive[randomIndex];
             
-            // Apply 15% buff (additive to base stats or just a generic buff counter?)
-            // The prompt says "Base attributes permanently increased by 15%".
-            // Since we don't have base attributes in state easily, let's add a "buffs" field or just modify stats.
-            // Let's modify the `stats` object directly.
-            
-            const currentChips = card.stats.chips || 0;
-            const currentMult = card.stats.mult || 0;
-            const currentDmgMod = card.stats.baseDamageMod || 0;
+            const currentChips = card.stats?.chips || 0;
+            const currentMult = card.stats?.mult || 0;
+            const currentDmgMod = card.stats?.baseDamageMod || 0;
             
             newActive[randomIndex] = {
                 ...card,
@@ -499,7 +479,6 @@ export default function GameBoard() {
                     baseDamageMod: currentDmgMod + 15
                 }
             };
-            
             return {
                 ...prev,
                 gold: prev.gold - 20,
@@ -508,7 +487,6 @@ export default function GameBoard() {
             };
         });
     } else {
-        // Buy EXP
         setPlayer(prev => {
             let newExp = prev.currentExp + 4;
             let newLevel = prev.level;
@@ -519,12 +497,10 @@ export default function GameBoard() {
                 newLevel++;
                 newMaxExp = LEVEL_EXP_CURVE[newLevel];
             }
-            
             if (newLevel === 9) {
                 newExp = 0;
                 newMaxExp = 9999;
             }
-
             return {
                 ...prev,
                 gold: prev.gold - 4,
@@ -539,40 +515,74 @@ export default function GameBoard() {
   const refreshShop = () => {
     const cheaterSynergy = activeSynergies.find(s => s.id === 'cheater');
     const cost = (cheaterSynergy && cheaterSynergy.activeLevel >= 1) ? 1 : shopRefreshCost;
-
     if (player.gold >= cost) {
         setPlayer(prev => ({ ...prev, gold: prev.gold - cost }));
         generateShop();
     }
   };
 
+  // Fixed: Comprehensive 3-to-1 Synthesis Logic
   const buyTFTCard = (card: TFTCard, index: number) => {
-    if (player.gold >= card.cost && player.benchTFTCards.length < 5) {
+    if (player.gold >= card.cost && player.benchTFTCards.length < 6) {
         setPlayer(prev => {
-            const newBench = [...prev.benchTFTCards, card];
-            // Check for synthesis
-            const sameCards = newBench.filter(c => c.templateId === card.templateId && c.stars === card.stars);
-            if (sameCards.length >= 3) {
-                // Synthesize!
-                const upgradedCard: TFTCard = {
-                    ...card,
-                    stars: card.stars + 1,
-                    stats: {
-                        chips: card.stats.chips ? card.stats.chips * 2 : undefined,
-                        mult: card.stats.mult ? card.stats.mult * 2 : undefined,
-                        percentMult: card.stats.percentMult ? card.stats.percentMult * 2 : undefined,
+            let newActive = [...prev.activeTFTCards];
+            let newBench = [...prev.benchTFTCards, { ...card, stats: { ...card.stats } }];
+
+            let synthesized = true;
+            while(synthesized) {
+                synthesized = false;
+                const counts: Record<string, {type: 'active'|'bench', index: number}[]> = {};
+                
+                newActive.forEach((c, i) => {
+                    const key = `${c.templateId}_${c.stars}`;
+                    if(!counts[key]) counts[key] = [];
+                    counts[key].push({type: 'active', index: i});
+                });
+                newBench.forEach((c, i) => {
+                    const key = `${c.templateId}_${c.stars}`;
+                    if(!counts[key]) counts[key] = [];
+                    counts[key].push({type: 'bench', index: i});
+                });
+
+                for (const key in counts) {
+                    if (counts[key].length >= 3 && !key.endsWith('_3')) {
+                        synthesized = true;
+                        // Reverse delete to prevent array index shifting issues
+                        const toRemove = counts[key].slice(0, 3).reverse(); 
+                        let templateCard: TFTCard | null = null;
+                        
+                        toRemove.forEach(rm => {
+                            if (rm.type === 'active') {
+                                templateCard = newActive[rm.index];
+                                newActive.splice(rm.index, 1);
+                            } else {
+                                templateCard = newBench[rm.index];
+                                newBench.splice(rm.index, 1);
+                            }
+                        });
+
+                        if (templateCard) {
+                            const upgraded: TFTCard = {
+                                ...(templateCard as TFTCard),
+                                id: Math.random().toString(36).substr(2, 9), // Grant new ID for UI animation
+                                stars: (templateCard as TFTCard).stars + 1,
+                                stats: {
+                                    chips: (templateCard as TFTCard).stats?.chips ? (templateCard as TFTCard).stats.chips! * 2 : undefined,
+                                    mult: (templateCard as TFTCard).stats?.mult ? (templateCard as TFTCard).stats.mult! * 2 : undefined,
+                                    percentMult: (templateCard as TFTCard).stats?.percentMult ? (templateCard as TFTCard).stats.percentMult! * 2 : undefined,
+                                }
+                            };
+                            newBench.push(upgraded);
+                        }
+                        break; // Break inner loop, restart while
                     }
-                };
-                const remainingBench = newBench.filter(c => !(c.templateId === card.templateId && c.stars === card.stars));
-                return {
-                    ...prev,
-                    gold: prev.gold - card.cost,
-                    benchTFTCards: [...remainingBench, upgradedCard]
-                };
+                }
             }
+
             return {
                 ...prev,
                 gold: prev.gold - card.cost,
+                activeTFTCards: newActive,
                 benchTFTCards: newBench
             };
         });
@@ -582,6 +592,7 @@ export default function GameBoard() {
 
   const swapTFTCard = (fromBenchIndex: number, toActiveIndex: number) => {
     setPlayer(prev => {
+        if (!showShop) return prev;
         const newActive = [...prev.activeTFTCards];
         const newBench = [...prev.benchTFTCards];
         
@@ -606,7 +617,8 @@ export default function GameBoard() {
 
   const moveActiveToBench = (index: number) => {
     setPlayer(prev => {
-        if (prev.benchTFTCards.length >= 5) return prev;
+        if (!showShop) return prev; // Fixed: Prevent swapping during combat
+        if (prev.benchTFTCards.length >= 6) return prev; // Fixed: Bench Limit 6
         const card = prev.activeTFTCards[index];
         const newActive = prev.activeTFTCards.filter((_, i) => i !== index);
         const newBench = [...prev.benchTFTCards, card];
@@ -616,7 +628,8 @@ export default function GameBoard() {
 
   const moveBenchToActive = (index: number) => {
     setPlayer(prev => {
-        if (prev.activeTFTCards.length >= 5) return prev;
+        if (!showShop) return prev; // Fixed: Prevent swapping during combat
+        if (prev.activeTFTCards.length >= prev.level) return prev; // Fixed: Active Limit = Level
         const card = prev.benchTFTCards[index];
         const newBench = prev.benchTFTCards.filter((_, i) => i !== index);
         const newActive = [...prev.activeTFTCards, card];
@@ -626,9 +639,10 @@ export default function GameBoard() {
 
   const handleSellCard = (type: 'active' | 'bench', index: number) => {
       setPlayer(prev => {
+          if (!showShop) return prev;
           const card = type === 'active' ? prev.activeTFTCards[index] : prev.benchTFTCards[index];
           if (!card) return prev;
-          const sellValue = Math.max(1, card.cost - 1); // 基础回收价格
+          const sellValue = Math.max(1, card.cost - 1);
           const newActive = [...prev.activeTFTCards];
           const newBench = [...prev.benchTFTCards];
           if (type === 'active') newActive.splice(index, 1);
@@ -640,7 +654,6 @@ export default function GameBoard() {
   const closeShop = () => {
     setIsSelling(false);
     setShowShop(false);
-    // Draw initial hand for next battle
     setPlayer(prev => {
         const { drawn, remaining } = drawCards(prev.deck, 8);
         return { ...prev, hand: drawn, deck: remaining };
@@ -1811,20 +1824,22 @@ export default function GameBoard() {
                             <span className="text-[7px] font-black text-blue-400 uppercase tracking-widest flex items-center gap-1">
                                 <Layers size={8} /> 上场位 / ACTIVE
                             </span>
-                            <span className="text-[7px] text-slate-500 font-mono">{player.activeTFTCards.length}/5</span>
+                            <span className="text-[7px] text-slate-500 font-mono">{player.activeTFTCards.length}/{player.level}</span>
                         </div>
-                        <div className={`flex gap-1.5 justify-start p-1 rounded-lg transition-colors ${isSelling ? 'bg-rose-950/40 border border-rose-500/30' : 'border border-transparent'}`}>
-                            {Array.from({ length: 5 }).map((_, i) => (
+                        <div className={`flex gap-1.5 justify-start p-1 rounded-lg transition-colors flex-wrap ${isSelling ? 'bg-rose-950/40 border border-rose-500/30' : 'border border-transparent'}`}>
+                            {Array.from({ length: player.level }).map((_, i) => (
                                 <motion.div 
                                     key={i} 
                                     onClick={() => {
+                                        if (!showShop) return; // 战斗期间锁定点击
                                         if (!player.activeTFTCards[i]) return;
                                         if (isSelling) handleSellCard('active', i);
                                         else moveActiveToBench(i);
                                     }}
-                                    whileHover={{ scale: 1.05, y: -2 }}
+                                    whileHover={showShop ? { scale: 1.05, y: -2 } : {}}
                                     className={`
-                                        w-9 h-12 rounded-lg border flex flex-col items-center justify-center shrink-0 relative transition-all duration-300 cursor-pointer overflow-hidden
+                                        w-9 h-12 rounded-lg border flex flex-col items-center justify-center shrink-0 relative transition-all duration-300 overflow-hidden
+                                        ${showShop ? 'cursor-pointer' : 'cursor-default'}
                                         ${player.activeTFTCards[i] 
                                             ? (isSelling ? 'bg-rose-900 border-rose-500 shadow-lg shadow-rose-900/50' : 'bg-slate-800 border-blue-500/40 shadow-lg') 
                                             : 'bg-black/40 border-white/5 border-dashed hover:border-white/20'}
@@ -1860,18 +1875,21 @@ export default function GameBoard() {
                             <span className="text-[7px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1">
                                 <Archive size={8} /> 备战席 / BENCH
                             </span>
+                            <span className="text-[7px] text-slate-500 font-mono">{player.benchTFTCards.length}/6</span>
                         </div>
-                        <div className={`flex gap-1.5 p-1 rounded-lg transition-colors border ${isSelling ? 'bg-rose-950/40 border-rose-500/30' : 'bg-black/40 border-white/5'}`}>
-                            {Array.from({ length: 5 }).map((_, i) => (
+                        <div className={`flex gap-1.5 p-1 rounded-lg transition-colors border flex-wrap ${isSelling ? 'bg-rose-950/40 border-rose-500/30' : 'bg-black/40 border-white/5'}`}>
+                            {Array.from({ length: 6 }).map((_, i) => (
                                 <motion.div 
                                     key={i} 
                                     onClick={() => {
+                                        if (!showShop) return; // 战斗期间锁定点击
                                         if (!player.benchTFTCards[i]) return;
                                         if (isSelling) handleSellCard('bench', i);
                                         else moveBenchToActive(i);
                                     }}
                                     className={`
-                                        w-7 h-9 rounded-md flex items-center justify-center shrink-0 cursor-pointer transition-all border overflow-hidden relative
+                                        w-7 h-9 rounded-md flex items-center justify-center shrink-0 transition-all border overflow-hidden relative
+                                        ${showShop ? 'cursor-pointer' : 'cursor-default'}
                                         ${player.benchTFTCards[i] 
                                             ? (isSelling ? 'bg-rose-900 border-rose-500' : 'bg-slate-800 border-white/10') 
                                             : 'bg-slate-900/20 border-transparent'}
@@ -2157,7 +2175,7 @@ export default function GameBoard() {
                                 {/* Buy Button */}
                                 <button 
                                     onClick={() => buyTFTCard(card, i)}
-                                    disabled={player.gold < card.cost || player.benchTFTCards.length >= 5}
+                                    disabled={player.gold < card.cost || player.benchTFTCards.length >= 6}
                                     className="w-full sm:w-28 shrink-0 py-1.5 sm:py-3 bg-slate-800 hover:bg-blue-600 disabled:opacity-50 text-[10px] sm:text-xs font-black text-white rounded-lg sm:rounded-xl border border-white/5 flex flex-row sm:flex-col justify-center items-center gap-1 transition-colors shadow-md"
                                 >
                                     <span>购买</span>

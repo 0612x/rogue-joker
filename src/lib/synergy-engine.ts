@@ -5,8 +5,25 @@ export function calculateActiveSynergies(activeCards: TFTCard[]): Synergy[] {
   // 1. Count unique cards per synergy
   const synergyCounts: Record<string, Set<string>> = {};
 
+  // 建立中文名到核心 ID 的动态映射表，完美兼容旧版数据
+  const synergyMap: Record<string, string> = {
+    '锋刃': 'spades',
+    '堡垒': 'hearts',
+    '猛毒': 'clubs',
+    '财阀': 'diamonds',
+    '算力者': 'calculator',
+    '浪客': 'surfer',
+    '极客': 'geek',
+    '魔术师': 'magician',
+    '刺客': 'assassin',
+    '老千': 'cheater'
+  };
+
   activeCards.forEach(card => {
-    card.synergies.forEach(synId => {
+    card.synergies.forEach(synName => {
+      // 自动将中文转换为系统的英文 ID
+      const synId = synergyMap[synName] || synName;
+      
       if (!synergyCounts[synId]) {
         synergyCounts[synId] = new Set();
       }

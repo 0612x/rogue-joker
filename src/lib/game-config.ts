@@ -2,8 +2,8 @@ import { Modifier, Enemy, HandType, Joker, Consumable, TFTCard, Synergy } from '
 
 // --- Level & Shop Constants ---
 export const LEVEL_EXP_CURVE: Record<number, number> = {
-  1: 0,
-  2: 0,
+  1: 2,
+  2: 4,
   3: 6,
   4: 10,
   5: 20,
@@ -14,6 +14,8 @@ export const LEVEL_EXP_CURVE: Record<number, number> = {
 };
 
 export const SHOP_PROBABILITIES: Record<number, Record<number, number>> = {
+  1: { 1: 100, 2: 0, 3: 0, 4: 0, 5: 0 },
+  2: { 1: 100, 2: 0, 3: 0, 4: 0, 5: 0 },
   3: { 1: 100, 2: 0, 3: 0, 4: 0, 5: 0 },
   4: { 1: 75, 2: 25, 3: 0, 4: 0, 5: 0 }, // Interpolated
   5: { 1: 45, 2: 35, 3: 20, 4: 0, 5: 0 },
