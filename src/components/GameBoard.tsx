@@ -891,6 +891,13 @@ export default function GameBoard() {
         addSeq('synergy', `学徒算力汇聚: +${turnTemporaryMult}倍`, 'text-blue-300');
     }
 
+    // 预判是否会获得护甲，用于铁壁算盘特效触发
+    const willGainBlock = player.activeTFTCards.some(c => 
+        (c.templateId === 'c1-06' && isSingle) ||
+        (c.templateId === 'c2-03' && !isPair) ||
+        (c.templateId === 'c2-07' && isStraight)
+    );
+
     // --- TFT 卡牌插槽特效录入 (严格排队，动态加分) ---
     player.activeTFTCards.forEach((card, index) => {
         let text = ""; let color = "text-cyan-300";
@@ -958,6 +965,7 @@ export default function GameBoard() {
 
         // 仅动画播报 (底层扣血/护甲结算移交 applyHandEffects)
         if (card.templateId === 'c1-01' && isSingle) { text = `高牌蓄势`; triggered = true; }
+        if (card.templateId === 'c1-03' && willGainBlock) { text = `铁壁增幅`; color="text-fuchsia-400"; triggered = true; }
         if (card.templateId === 'c1-04' && isStraight) { text = `植入木马`; color="text-emerald-400"; triggered = true; }
         if (card.templateId === 'c1-06' && isSingle) { text = `坚壁防御`; color="text-fuchsia-400"; triggered = true; }
         if (card.templateId === 'c1-07' && isFlush && hasClubs) { text = `毒液回血`; color="text-emerald-300"; triggered = true; }
@@ -1502,6 +1510,8 @@ export default function GameBoard() {
     const trojan = activeSynergies.find(s => s.id === 'clubs');
     const syndicate = activeSynergies.find(s => s.id === 'diamonds');
 
+    let endTurnFbs: {id: number, text: string, color: string}[] = [];
+
     // 1. Passive Damage (Poison & Item Thorns)
     let thornsDamage = 0;
     if (player.modifiers.some(m => m.id === 'thorns-protocol')) {
@@ -1517,7 +1527,7 @@ export default function GameBoard() {
     const witherCard = player.activeTFTCards.find(c => c.templateId === 'c5-03');
     if (witherCard && Math.random() < (witherCard.stars===1?0.2:witherCard.stars===2?0.5:1)) {
         finalPoisonDamage *= 3;
-        setFeedbackTexts(prev => [...prev, { id: Date.now(), text: `毒伤暴击`, color: 'text-emerald-400' }]);
+        endTurnFbs.push({ id: Date.now(), text: `凋零: 毒伤暴击`, color: 'text-emerald-400' });
     }
 
     const totalPassiveDamage = finalPoisonDamage + thornsDamage;
@@ -1557,9 +1567,8 @@ export default function GameBoard() {
         const explosionDamage = trojanStacks * player.maxHp;
         currentEnemyHp = Math.max(0, currentEnemyHp - explosionDamage);
         nextStatusEffects = nextStatusEffects.filter(e => e.type !== 'poison');
-        trojanExploded = true;
         setFlyingDamage({ amount: explosionDamage, isFlying: true });
-        setFeedbackTexts(prev => [...prev, { id: Date.now()+1, text: `木马引爆!`, color: 'text-emerald-400' }]);
+        endTurnFbs.push({ id: Date.now()+1, text: `木马引爆!`, color: 'text-emerald-400' });
     }
 
     if (currentEnemyHp <= 0) {
@@ -1621,11 +1630,20 @@ export default function GameBoard() {
 
         damageToPlayer = remainingDmg;
 
+        if (goldLost > 0) {
+            endTurnFbs.push({ id: Date.now()+2, text: `金币抵伤 -$${goldLost}`, color: 'text-amber-400' });
+        }
+
         // Fortress (4): 受到真实扣血伤害时，永久加生命上限
         if (damageToPlayer > 0 && fortress && fortress.activeLevel >= 2) {
             maxHpGain += damageToPlayer;
-            setFeedbackTexts(prev => [...prev, { id: Date.now()+2, text: `防线增殖 +${damageToPlayer}上限`, color: 'text-fuchsia-400' }]);
+            endTurnFbs.push({ id: Date.now()+3, text: `堡垒: +${damageToPlayer}上限`, color: 'text-fuchsia-400' });
         }
+    }
+
+    if (reflectDamage > 0) {
+        currentEnemyHp = Math.max(0, currentEnemyHp - reflectDamage);
+        endTurnFbs.push({ id: Date.now()+4, text: `堡垒: 荆棘反伤`, color: 'text-rose-400' });
     }
 
     // c3-04 灵魂熔炉: 受到扣血伤害时，当前卡牌永久加基础倍率
@@ -1633,15 +1651,33 @@ export default function GameBoard() {
     if (damageToPlayer > 0) {
         activeCardsUpdatedForHit = activeCardsUpdatedForHit.map(c => {
             if (c.templateId === 'c3-04') {
+                endTurnFbs.push({ id: Date.now()+5, text: `熔炉升温`, color: 'text-rose-500' });
                 return { ...c, stats: { ...c.stats, mult: (c.stats?.mult || 0) + (c.stars===1?1:c.stars===2?3:10) } };
             }
             return c;
         });
     }
 
-    if (reflectDamage > 0) {
-        currentEnemyHp = Math.max(0, currentEnemyHp - reflectDamage);
-        setFeedbackTexts(prev => [...prev, { id: Date.now()+3, text: `荆棘反弹`, color: 'text-rose-400' }]);
+    // 计算回合结束后的护甲保留 (移出 setState 安全执行)
+    let retainRate = 0;
+    if (fortress) {
+        if (fortress.activeLevel === 1) retainRate = 0.3;
+        if (fortress.activeLevel === 2) retainRate = 0.7;
+        if (fortress.activeLevel >= 3) retainRate = 1.0;
+    }
+    const hasAegis = player.activeTFTCards.some(c => c.templateId === 'c5-04');
+    if (hasAegis) retainRate = 1.0;
+    
+    const retainedBlock = Math.floor(blockAfterHit * retainRate);
+    if (retainedBlock > 0) {
+        if (hasAegis) endTurnFbs.push({ id: Date.now()+6, text: `埃癸斯: 护甲锁死`, color: 'text-amber-400' });
+        else endTurnFbs.push({ id: Date.now()+7, text: `堡垒: 保留 ${retainedBlock} 🛡️`, color: 'text-fuchsia-400' });
+    }
+
+    // 统一下发回合结束的所有反馈
+    if (endTurnFbs.length > 0) {
+        setFeedbackTexts(prev => [...prev, ...endTurnFbs]);
+        setTimeout(() => setFeedbackTexts([]), 3500);
     }
 
     // Apply Enemy Updates
@@ -1708,18 +1744,6 @@ export default function GameBoard() {
         const magician = activeSynergies.find(s => s.id === 'magician');
         if (magician && magician.activeLevel >= 1) baseDiscards += 2;
 
-        // Fortress (2/4/6) 护甲保留
-        let retainRate = 0;
-        if (fortress) {
-            if (fortress.activeLevel === 1) retainRate = 0.3;
-            if (fortress.activeLevel === 2) retainRate = 0.7;
-            if (fortress.activeLevel >= 3) retainRate = 1.0;
-        }
-        // c5-04 神创堡垒绝对保留
-        if (prev.activeTFTCards.some(c => c.templateId === 'c5-04')) retainRate = 1.0;
-        
-        const retainedBlock = Math.floor(blockAfterHit * retainRate);
-
         return {
             ...prev,
             currentHp: Math.max(0, newHp),
@@ -1730,7 +1754,7 @@ export default function GameBoard() {
             pendingCardIds: [],
             hands: 3,
             discards: baseDiscards,
-            block: retainedBlock,
+            block: retainedBlock, // 使用上面外部预先计算好的护甲保留值
             gold: prev.gold - goldLost,
             activeTFTCards: activeCardsUpdatedForHit
         };
