@@ -22,7 +22,7 @@ export const CARD_DATABASE: Omit<TFTCard, 'id' | 'stars'>[] = [
   // --- 1 Cost (8张) ---
   createCard('c1-01', '暗巷快刀', 1, ['spades', 'assassin'], '【星级: +3/+8/+25 筹码】\n单张牌击杀怪物时，永久增加基础筹码。'),
   createCard('c1-02', '发牌童子', 1, ['diamonds', 'magician'], '【星级: +1/+2/+5金, +2/+5/+15血】\n胜利时若本回合未弃牌得金币，若受伤回血。'),
-  createCard('c1-03', '铁壁算盘', 1, ['hearts', 'calculator'], '【星级: 提升 2%/5%/15%】\n牌库中每有一张红桃，提升你的护甲获取率。'),
+  createCard('c1-03', '铁壁算盘', 1, ['hearts', 'calculator'], '【星级: 提升 2%/5%/15%】\n当前手牌中每有一张红桃，提升你的护甲获取率。'),
   createCard('c1-04', '见习黑客', 1, ['clubs', 'geek'], '【星级: 植入 2/5/15 层】\n每次打出顺子，强制给怪物植入木马病毒。'),
   createCard('c1-05', '拾荒猎犬', 1, ['diamonds', 'cheater'], '【星级: +2/+5/+15 筹码】\n每次商店刷新扣1血，并永久增加基础筹码。'),
   createCard('c1-06', '盾卫新兵', 1, ['hearts', 'assassin'], '【星级: +15/+35/+100 护甲】\n如果只打出1张牌，额外获得大量护甲。'),

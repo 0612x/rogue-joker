@@ -128,6 +128,7 @@ export default function GameBoard() {
   const [playerHitState, setPlayerHitState] = useState<'idle' | 'hit'>('idle');
   const [playerDamageTaken, setPlayerDamageTaken] = useState<number>(0);
   const [playerBlockTaken, setPlayerBlockTaken] = useState<number>(0);
+  const [floatingStats, setFloatingStats] = useState<{id: number, type: 'hp'|'block'|'gold', val: string, color: string}[]>([]);
 
   // Derived Synergies
   const activeSynergies = useMemo(() => {
@@ -610,7 +611,13 @@ export default function GameBoard() {
             setTimeout(() => setTftFeedbacks([]), 2000);
         }
 
-        setPlayer(prev => ({ 
+        if (hpCost > 0) {
+            const hpId = Date.now();
+            setFloatingStats(prev => [...prev, { id: hpId, type: 'hp', val: `-${hpCost}`, color: 'text-rose-500' }]);
+            setTimeout(() => setFloatingStats(prev => prev.filter(f => f.id !== hpId)), 2000);
+        }
+
+        setPlayer(prev => ({
             ...prev, 
             gold: prev.gold - goldToPay,
             currentHp: Math.max(1, prev.currentHp - hpCost),
@@ -693,6 +700,12 @@ export default function GameBoard() {
             };
         });
         setShopCards(prev => prev.filter((_, i) => i !== index));
+
+        if (hpToPay > 0) {
+            const hpId = Date.now();
+            setFloatingStats(prev => [...prev, { id: hpId, type: 'hp', val: `-${hpToPay}`, color: 'text-rose-500' }]);
+            setTimeout(() => setFloatingStats(prev => prev.filter(f => f.id !== hpId)), 2000);
+        }
     }
   };
 
@@ -1021,31 +1034,8 @@ export default function GameBoard() {
     let goldGain = 0;
     let isPiercing = false;
 
-    // --- SYNERGY EFFECTS (Fixed IDs matching config) ---
-    
-    // 1. Blade (Spades)
-    const bladeSynergy = activeSynergies.find(s => s.id === 'spades');
-    if (bladeSynergy && bladeSynergy.activeLevel > 0) {
-        const bonus = bladeSynergy.activeLevel === 1 ? 30 : bladeSynergy.activeLevel === 2 ? 80 : 0;
-        rawDamage += bonus;
-        if (bladeSynergy.activeLevel >= 3) {
-            rawDamage *= 3;
-        }
-    }
-
-    // 2. Fortress (Hearts)
-    const fortressSynergy = activeSynergies.find(s => s.id === 'hearts');
-    if (fortressSynergy && fortressSynergy.activeLevel > 0) {
-        const bonus = fortressSynergy.activeLevel === 1 ? 20 : fortressSynergy.activeLevel === 2 ? 50 : 0;
-        blockGain += bonus;
-    }
-
-    // 3. Venom (Clubs)
-    const venomSynergy = activeSynergies.find(s => s.id === 'clubs');
-    if (venomSynergy && venomSynergy.activeLevel > 0) {
-        const bonus = venomSynergy.activeLevel === 1 ? 2 : venomSynergy.activeLevel === 2 ? 6 : 6;
-        poisonStacks += bonus;
-    }
+    // --- SYNERGY EFFECTS (新版羁绊逻辑) ---
+    // (旧版的+30伤害、+20护甲、+2毒已全部废弃，新逻辑已无缝融入 playHand 时序算分 与 endTurn 结算中)
 
     // --- COMBAT NUMBERS & CARD EFFECTS ---
     let healAmount = 0;
@@ -1108,11 +1098,27 @@ export default function GameBoard() {
         if (id === 'c5-05') isPiercing = true;
     });
 
-    // c1-03 铁壁算盘 (全局护甲获取率提升)
+    // c1-03 铁壁算盘 (全局护甲获取率提升 - 改为读取手牌)
     const c103 = player.activeTFTCards.find(c => c.templateId === 'c1-03');
     if (c103 && blockGain > 0) {
-        const heartsInDeck = player.deck.filter(c => c.suit === 'hearts').length;
-        blockGain = Math.floor(blockGain * (1 + (heartsInDeck * (c103.stars===1?0.02:c103.stars===2?0.05:0.15))));
+        const heartsInHand = player.hand.filter(c => c.suit === 'hearts').length;
+        const multiplier = 1 + (heartsInHand * (c103.stars===1?0.02:c103.stars===2?0.05:0.15));
+        blockGain = Math.floor(blockGain * multiplier);
+    }
+
+    // --- 注入底部状态栏动态跳字 ---
+    let newFloatingStats: {id: number, type: 'hp'|'block'|'gold', val: string, color: string}[] = [];
+    if (blockGain > 0) newFloatingStats.push({ id: Date.now()+1, type: 'block', val: `+${blockGain}`, color: 'text-blue-400' });
+    if (healAmount > 0) newFloatingStats.push({ id: Date.now()+2, type: 'hp', val: `+${healAmount}`, color: 'text-emerald-400' });
+    if (maxHpGain > 0) newFloatingStats.push({ id: Date.now()+3, type: 'hp', val: `上限+${maxHpGain}`, color: 'text-fuchsia-400' });
+    if (selfHpLoss > 0) newFloatingStats.push({ id: Date.now()+4, type: 'hp', val: `-${selfHpLoss}`, color: 'text-rose-500' });
+    if (goldGain > 0) newFloatingStats.push({ id: Date.now()+5, type: 'gold', val: `+$${goldGain}`, color: 'text-amber-400' });
+
+    if (newFloatingStats.length > 0) {
+        setFloatingStats(prev => [...prev, ...newFloatingStats]);
+        setTimeout(() => {
+            setFloatingStats(prev => prev.filter(f => !newFloatingStats.find(nf => nf.id === f.id)));
+        }, 2000);
     }
 
     // Assassin (4) Execute
@@ -1157,28 +1163,6 @@ export default function GameBoard() {
     setEnemy(prev => {
       if (!prev) return null;
       let damageDealt = rawDamage;
-      
-      // 6. Assassin - Single Card Bonus
-      const assassinSynergy = activeSynergies.find(s => s.id === 'assassin');
-      if (assassinSynergy && assassinSynergy.activeLevel > 0) {
-          if (selectedHand.cards.length === 1) {
-              // Level 1: Damage x3
-              // Level 2: Trigger 3 times (Assume x3 * x3 = x9 for now, or just x3 effects)
-              // Let's interpret "Trigger 3 times" as "Score 3 times".
-              // If Level 1 is x3, Level 2 is "Trigger 3 times".
-              // Does Level 2 REPLACE Level 1? Usually thresholds stack or replace.
-              // "Thresholds: [2, 4]".
-              // If activeLevel is 2 (4 units), it implies Level 1 is also active?
-              // Usually in TFT, higher tier replaces or adds.
-              // Description: "(2)... (4)...".
-              // Let's assume Level 2 is x9 (x3 from Lv1 * x3 from Lv2? Or just x3 total?)
-              // "Trigger 3 times" sounds like x3.
-              // If Lv1 is x3, and Lv2 is "Trigger 3 times", maybe Lv2 is just x3 but applies to effects?
-              // Let's make Lv1 x3, and Lv2 x9 to be safe/powerful.
-              const multiplier = assassinSynergy.activeLevel === 1 ? 3 : 9;
-              damageDealt *= multiplier;
-          }
-      }
 
       if (prev.intent.type === 'leech') {
           const healAmount = Math.floor(damageDealt * 0.5);
@@ -1468,6 +1452,12 @@ export default function GameBoard() {
           setTimeout(() => setTftFeedbacks([]), 2000);
       }
 
+      if (goldEarned > 0) {
+          const goldId = Date.now();
+          setFloatingStats(prev => [...prev, { id: goldId, type: 'gold', val: `+$${goldEarned}`, color: 'text-amber-400' }]);
+          setTimeout(() => setFloatingStats(prev => prev.filter(f => f.id !== goldId)), 2000);
+      }
+
       const newDiscard = [...prev.discardPile, ...cardsToDiscard];
       
       // Draw replacements
@@ -1678,6 +1668,16 @@ export default function GameBoard() {
     if (endTurnFbs.length > 0) {
         setFeedbackTexts(prev => [...prev, ...endTurnFbs]);
         setTimeout(() => setFeedbackTexts([]), 3500);
+    }
+
+    // --- 注入底部状态栏动态跳字 ---
+    let newEndTurnStats: {id: number, type: 'hp'|'block'|'gold', val: string, color: string}[] = [];
+    if (goldLost > 0) newEndTurnStats.push({ id: Date.now()+8, type: 'gold', val: `-$${goldLost}`, color: 'text-rose-500' });
+    if (maxHpGain > 0) newEndTurnStats.push({ id: Date.now()+9, type: 'hp', val: `上限+${maxHpGain}`, color: 'text-fuchsia-400' });
+    
+    if (newEndTurnStats.length > 0) {
+        setFloatingStats(prev => [...prev, ...newEndTurnStats]);
+        setTimeout(() => setFloatingStats(prev => prev.filter(f => !newEndTurnStats.find(nf => nf.id === f.id))), 2000);
     }
 
     // Apply Enemy Updates
@@ -2042,6 +2042,25 @@ export default function GameBoard() {
       {/* Main Game Area */}
       <main className="flex-1 flex flex-col min-h-0 relative z-10">
         
+        {/* 全局羁绊文字反馈 (提取到最顶层，无视所有遮挡) */}
+        <AnimatePresence>
+            {feedbackTexts.length > 0 && (
+                <div className="fixed top-[40%] left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col gap-2 z-[9999] pointer-events-none items-center w-max">
+                    {feedbackTexts.map(fb => (
+                        <motion.div
+                            key={fb.id}
+                            initial={{ opacity: 0, y: 20, scale: 0.8 }}
+                            animate={{ opacity: 1, y: 0, scale: 1.1 }}
+                            exit={{ opacity: 0, y: -20 }}
+                            className={`text-lg sm:text-2xl font-black ${fb.color} drop-shadow-[0_0_20px_currentColor] bg-black/90 px-6 py-2 rounded-full border-2 border-white/20`}
+                        >
+                            {fb.text}
+                        </motion.div>
+                    ))}
+                </div>
+            )}
+        </AnimatePresence>
+
         {/* Enemy Section */}
         <section className={`shrink-0 px-3 py-2 flex items-center justify-between gap-3 bg-slate-900/30 border-b border-white/5 backdrop-blur-sm ${showShop ? 'hidden' : ''}`}>
             {/* Enemy Info */}
@@ -2247,25 +2266,6 @@ export default function GameBoard() {
                                 </div>
                             </div>
                         </motion.div>
-                    )}
-                </AnimatePresence>
-
-                {/*羁绊文字反馈 (全局居中且绝对位于最上层)*/}
-                <AnimatePresence>
-                    {feedbackTexts.length > 0 && (
-                        <div className="absolute -top-16 sm:-top-24 left-1/2 -translate-x-1/2 flex flex-col gap-1.5 z-[200] pointer-events-none items-center w-max">
-                            {feedbackTexts.map(fb => (
-                                <motion.div
-                                    key={fb.id}
-                                    initial={{ opacity: 0, y: 10, scale: 0.8 }}
-                                    animate={{ opacity: 1, y: 0, scale: 1.1 }}
-                                    exit={{ opacity: 0, y: -10 }}
-                                    className={`text-sm sm:text-xl font-black ${fb.color} drop-shadow-[0_0_15px_currentColor] bg-black/90 px-5 py-1.5 rounded-full border border-white/20`}
-                                >
-                                    {fb.text}
-                                </motion.div>
-                            ))}
-                        </div>
                     )}
                 </AnimatePresence>
 
@@ -2668,17 +2668,38 @@ export default function GameBoard() {
                                     )}
                                 </motion.div>
                             )}
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 relative">
                                 <Heart size={10} className="text-rose-500" />
                                 <span className="text-[10px] font-bold text-white">{player.currentHp}/{player.maxHp}</span>
+                                <AnimatePresence>
+                                    {floatingStats.filter(f => f.type === 'hp').map(f => (
+                                        <motion.div key={f.id} initial={{opacity:0, y:0, scale:0.5}} animate={{opacity:1, y:-24, scale:1.3}} exit={{opacity:0, y:-34}} className={`absolute bottom-3 left-4 text-[12px] font-black whitespace-nowrap drop-shadow-[0_0_8px_currentColor] pointer-events-none z-50 ${f.color}`}>
+                                            {f.val}
+                                        </motion.div>
+                                    ))}
+                                </AnimatePresence>
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 relative">
                                 <Shield size={10} className="text-blue-400" />
                                 <span className="text-[10px] font-bold text-white">{player.block}</span>
+                                <AnimatePresence>
+                                    {floatingStats.filter(f => f.type === 'block').map(f => (
+                                        <motion.div key={f.id} initial={{opacity:0, y:0, scale:0.5}} animate={{opacity:1, y:-24, scale:1.3}} exit={{opacity:0, y:-34}} className={`absolute bottom-3 left-4 text-[12px] font-black whitespace-nowrap drop-shadow-[0_0_8px_currentColor] pointer-events-none z-50 ${f.color}`}>
+                                            {f.val}
+                                        </motion.div>
+                                    ))}
+                                </AnimatePresence>
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 relative">
                                 <Coins size={10} className="text-amber-400" />
                                 <span className="text-[10px] font-bold text-white">${player.gold}</span>
+                                <AnimatePresence>
+                                    {floatingStats.filter(f => f.type === 'gold').map(f => (
+                                        <motion.div key={f.id} initial={{opacity:0, y:0, scale:0.5}} animate={{opacity:1, y:-24, scale:1.3}} exit={{opacity:0, y:-34}} className={`absolute bottom-3 left-4 text-[12px] font-black whitespace-nowrap drop-shadow-[0_0_8px_currentColor] pointer-events-none z-50 ${f.color}`}>
+                                            {f.val}
+                                        </motion.div>
+                                    ))}
+                                </AnimatePresence>
                             </div>
                         </motion.div>
 
