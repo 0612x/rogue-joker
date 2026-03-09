@@ -127,6 +127,7 @@ export default function GameBoard() {
   const [enemyHitState, setEnemyHitState] = useState<'idle' | 'hit'>('idle');
   const [playerHitState, setPlayerHitState] = useState<'idle' | 'hit'>('idle');
   const [playerDamageTaken, setPlayerDamageTaken] = useState<number>(0);
+  const [playerBlockTaken, setPlayerBlockTaken] = useState<number>(0);
 
   // Derived Synergies
   const activeSynergies = useMemo(() => {
@@ -1568,9 +1569,11 @@ export default function GameBoard() {
 
     // 3. Resolve Intent Attack
     let damageToPlayer = 0;
+    let blockConsumed = 0;
     let reflectDamage = 0;
     let maxHpGain = 0;
     let goldLost = 0;
+    let blockAfterHit = player.block;
 
     if (intent.type === 'attack') {
         let incomingDamage = intent.value || 0;
@@ -1585,7 +1588,9 @@ export default function GameBoard() {
             reflectDamage = Math.min(incomingDamage, player.block);
         }
 
-        let remainingDmg = Math.max(0, incomingDamage - player.block);
+        blockConsumed = Math.min(incomingDamage, blockAfterHit);
+        blockAfterHit -= blockConsumed;
+        let remainingDmg = incomingDamage - blockConsumed;
 
         // Syndicate (6): 金币抵挡真实伤害 (1金=3甲)
         if (remainingDmg > 0 && syndicate && syndicate.activeLevel >= 3) {
@@ -1651,10 +1656,11 @@ export default function GameBoard() {
         };
     });
 
-    if (damageToPlayer > 0) {
+    if (intent.type === 'attack') {
         setPlayerDamageTaken(damageToPlayer);
+        setPlayerBlockTaken(blockConsumed);
         setPlayerHitState('hit');
-        setTimeout(() => setPlayerHitState('idle'), 400);
+        setTimeout(() => setPlayerHitState('idle'), 500);
     }
 
     // 4. Reset Player State & Draw
@@ -1712,7 +1718,7 @@ export default function GameBoard() {
         // c5-04 神创堡垒绝对保留
         if (prev.activeTFTCards.some(c => c.templateId === 'c5-04')) retainRate = 1.0;
         
-        const retainedBlock = Math.floor(prev.block * retainRate);
+        const retainedBlock = Math.floor(blockAfterHit * retainRate);
 
         return {
             ...prev,
@@ -2617,11 +2623,25 @@ export default function GameBoard() {
                             {playerHitState === 'hit' && (
                                 <motion.div 
                                     initial={{ opacity: 1, y: 0, scale: 1 }}
-                                    animate={{ opacity: 0, y: -20, scale: 1.5 }}
+                                    animate={{ opacity: 0, y: -20, scale: 1.2 }}
                                     transition={{ duration: 0.5 }}
-                                    className="absolute -top-6 left-4 z-50 text-xl font-black text-rose-500 drop-shadow-[0_0_10px_rgba(225,29,72,0.8)] pointer-events-none"
+                                    className="absolute -top-8 left-4 z-50 flex flex-col items-center pointer-events-none"
                                 >
-                                    -{playerDamageTaken}
+                                    {playerDamageTaken > 0 && (
+                                        <div className="text-xl font-black text-rose-500 drop-shadow-[0_0_10px_rgba(225,29,72,0.8)]">
+                                            -{playerDamageTaken}
+                                        </div>
+                                    )}
+                                    {playerBlockTaken > 0 && (
+                                        <div className="text-base font-black text-blue-400 drop-shadow-[0_0_10px_rgba(59,130,246,0.8)]">
+                                            -{playerBlockTaken} 🛡️
+                                        </div>
+                                    )}
+                                    {playerDamageTaken === 0 && playerBlockTaken === 0 && (
+                                        <div className="text-base font-black text-slate-400 drop-shadow-md">
+                                            MISS
+                                        </div>
+                                    )}
                                 </motion.div>
                             )}
                             <div className="flex items-center gap-2">
